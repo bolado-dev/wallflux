@@ -9,6 +9,7 @@ import {
   RefreshCw,
   Settings2,
   Sparkles,
+  Store,
 } from "lucide-react";
 import { Toaster, toast } from "sonner";
 
@@ -22,6 +23,7 @@ import {
   type Status,
 } from "@/api";
 import { Gallery } from "@/components/Gallery";
+import { Workshop } from "@/components/Workshop";
 import { OutputStrip } from "@/components/OutputStrip";
 import { Settings } from "@/components/Settings";
 import { WallpaperCard } from "@/components/WallpaperCard";
@@ -47,6 +49,7 @@ export function App() {
   const [target, setTarget] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showGallery, setShowGallery] = useState(false);
+  const [showWorkshop, setShowWorkshop] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const fail = useCallback((err: unknown) => {
@@ -188,6 +191,12 @@ export function App() {
               Galería
             </Button>
             <IconButton
+              label="Taller de Wallpaper Engine"
+              onClick={() => setShowWorkshop(true)}
+            >
+              <Store />
+            </IconButton>
+            <IconButton
               label="Volver a escanear la biblioteca"
               onClick={() => void load(true)}
               disabled={busy}
@@ -270,6 +279,14 @@ export function App() {
             open={showGallery}
             onOpenChange={setShowGallery}
             onDownloaded={() => void load(true)}
+            onError={fail}
+            onSuccess={(message) => toast.success(message)}
+          />
+
+          <Workshop
+            open={showWorkshop}
+            onOpenChange={setShowWorkshop}
+            onImported={() => void load(true)}
             onError={fail}
             onSuccess={(message) => toast.success(message)}
           />

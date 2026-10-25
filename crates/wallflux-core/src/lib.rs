@@ -9,8 +9,9 @@ pub mod gallery;
 pub mod ipc;
 pub mod library;
 pub mod paths;
+pub mod steam_workshop;
 
-pub use config::{Config, GalleryConfig, PlaybackConfig, PowerConfig, ScaleMode};
+pub use config::{Config, GalleryConfig, PlaybackConfig, PowerConfig, ScaleMode, WorkshopConfig};
 pub use ipc::{OutputState, Request, Response, Status};
 pub use library::{Library, Wallpaper, WallpaperKind};
 

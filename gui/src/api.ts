@@ -90,11 +90,16 @@ export interface GalleryConfig {
   pexels_api_key: string;
 }
 
+export interface WorkshopConfig {
+  steam_user: string;
+}
+
 export interface Config {
   version: number;
   playback: PlaybackConfig;
   power: PowerConfig;
   gallery: GalleryConfig;
+  workshop: WorkshopConfig;
   outputs: Record<string, OutputConfig>;
 }
 
@@ -121,6 +126,35 @@ export interface GalleryView {
   pexels_enabled: boolean;
   /** Aviso no fatal: p. ej. Pexels falló pero el catálogo cargó. */
   warning: string | null;
+}
+
+export type WorkshopKind =
+  | "video"
+  | "scene"
+  | "web"
+  | "application"
+  | "unknown";
+
+export interface WorkshopItem {
+  id: string;
+  title: string;
+  kind: WorkshopKind;
+  preview_url: string | null;
+  tags: string[];
+  file_size: number;
+  resolution: string | null;
+  rating: string | null;
+  url: string;
+}
+
+export interface WorkshopView {
+  items: WorkshopItem[];
+  /** Cierto si steamcmd está disponible en el sistema. */
+  steamcmd: boolean;
+  /** Qué hacer si no lo está. */
+  steamcmd_help: string;
+  /** Cuenta de Steam guardada en la configuración. */
+  steam_user: string;
 }
 
 export interface DaemonInfo {
@@ -151,6 +185,10 @@ export const api = {
     invoke<GalleryView>("gallery_browse", { query }),
   galleryDownload: (item: GalleryItem) =>
     invoke<string>("gallery_download", { item }),
+  workshopBrowse: (query: string, sort: string, page: number) =>
+    invoke<WorkshopView>("workshop_browse", { query, sort, page }),
+  workshopImport: (itemId: string, steamUser: string) =>
+    invoke<string>("workshop_import", { itemId, steamUser }),
 };
 
 /** Por qué un fondo no se está moviendo, en palabras accionables. */
@@ -169,4 +207,27 @@ export function describePause(reason: PauseReason | null): string {
     default:
       return "En pausa";
   }
+}
+
+/** Por qué un elemento del taller se puede importar o no. */
+export function describeWorkshopKind(kind: WorkshopKind): string {
+  switch (kind) {
+    case "video":
+      return "Se puede importar";
+    case "scene":
+      return "Las escenas usan un formato .pkg propietario";
+    case "web":
+      return "Los fondos web aún no están soportados";
+    case "application":
+      return "Los fondos de tipo aplicación son ejecutables";
+    default:
+      return "Tipo de fondo no reconocido";
+  }
+}
+
+/** Tamaño en unidades legibles. */
+export function humanSize(bytes: number): string {
+  if (!bytes) return "—";
+  const mb = bytes / (1024 * 1024);
+  return mb >= 1 ? `${Math.round(mb)} MB` : `${Math.round(bytes / 1024)} KB`;
 }

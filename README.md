@@ -44,6 +44,8 @@ wallflux es la versión libre y pequeña de la parte útil:
   sobre el mismo daemon.
 - **Una galería integrada** de fondos libres, que se descargan con un clic
   sin cuenta ni configuración.
+- **Un explorador del taller de Wallpaper Engine**: navegable por cualquiera,
+  importable si tienes la aplicación.
 
 ## Estado
 
@@ -57,6 +59,7 @@ Alpha, y lo dice de frente:
 | Fondos de shader (tipo Shadertoy) y web | Sin empezar; el formato de paquete les reserva sitio |
 | Interfaz gráfica | Funciona: biblioteca, destino por salida, ajustes en vivo |
 | Galería en línea | Funciona: catálogo curado, y Pexels con clave propia |
+| Taller de Wallpaper Engine | Explorar, sí. Importar, con steamcmd y una cuenta que posea la app |
 
 ## Cómo funciona
 
@@ -266,13 +269,48 @@ el autor, la licencia y el enlace a la ficha original. CC BY y CC BY-SA
 piden atribución: si publicas una captura de tu escritorio, el crédito sale
 de ahí.
 
-### Sobre Wallpaper Engine
+## El taller de Wallpaper Engine
 
-wallflux **no** descarga fondos de Wallpaper Engine. Su catálogo vive en el
-Taller de Steam bajo una aplicación de pago, y las únicas formas de sacarlo
-sin tenerla funcionan saltándose ese control de acceso. No es una limitación
-técnica que falte resolver: es la razón por la que la galería usa fuentes de
-libre distribución.
+Explorar el taller **no** requiere tener nada: títulos, miniaturas, etiquetas
+y tamaños salen de la API pública de Steam, sin clave y sin cuenta. El botón
+del taller abre el catálogo real, y las etiquetas dicen ya si cada elemento
+es `video` o `scene`, así que lo inservible se descarta antes de descargar
+nada.
+
+<p align="center">
+  <img src="docs/gui-workshop.png" alt="El explorador del taller: contenido real de Steam con miniaturas, tipo y tamaño; botón de importar en los de vídeo y el motivo en los demás" width="900">
+</p>
+
+```sh
+wallfluxctl workshop                 # lo que está de moda
+wallfluxctl workshop anime --sort recent
+wallfluxctl workshop --get 3825386273 --steam-user tu-cuenta
+```
+
+**Descargar es otra cosa.** Cada respuesta de Steam trae el campo `file_url`
+vacío: no publica descarga directa de este contenido, porque Wallpaper Engine
+es una aplicación de pago. El único camino a los bytes es una cuenta de Steam
+que la posea, y es el que wallflux usa — con `steamcmd`, la herramienta
+oficial de Valve. Tu contraseña no pasa por wallflux en ningún momento:
+autentícate una vez con
+
+```sh
+steamcmd +login tu-cuenta +quit
+```
+
+y a partir de ahí las descargas van solas. Si Steam rechaza el acceso,
+wallflux traduce el error de steamcmd a algo accionable en vez de pasártelo
+en crudo.
+
+Lo que **no** hay aquí es ninguna forma de saltarse ese control. Existen
+sitios que redistribuyen contenido del taller sin la licencia; wallflux no
+los usa y no los va a usar. Si no tienes Wallpaper Engine, la galería de la
+sección anterior funciona entera y de principio a fin.
+
+Y aun teniéndola: solo los elementos de tipo `video` se convierten en fondos
+de wallflux. Las escenas son un `.pkg` propietario, los web necesitan una
+superficie de webview que todavía no existe, y los de tipo aplicación son
+ejecutables.
 
 ## Actualizar
 

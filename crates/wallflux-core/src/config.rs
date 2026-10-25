@@ -144,6 +144,15 @@ impl Default for GalleryConfig {
     }
 }
 
+/// Importar del taller de Steam.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WorkshopConfig {
+    /// Steam account that owns Wallpaper Engine. Only the user name: the
+    /// password is steamcmd's business and never passes through wallflux.
+    pub steam_user: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -151,6 +160,7 @@ pub struct Config {
     pub playback: PlaybackConfig,
     pub power: PowerConfig,
     pub gallery: GalleryConfig,
+    pub workshop: WorkshopConfig,
     /// Keyed by connector name as the compositor reports it (`eDP-1`,
     /// `DP-2`, …). `BTreeMap` so a rewritten file keeps a stable order
     /// instead of shuffling the user's sections around.
@@ -164,6 +174,7 @@ impl Default for Config {
             playback: PlaybackConfig::default(),
             power: PowerConfig::default(),
             gallery: GalleryConfig::default(),
+            workshop: WorkshopConfig::default(),
             outputs: BTreeMap::new(),
         }
     }
@@ -328,6 +339,15 @@ mod tests {
         let config = Config::default();
         assert!(config.gallery.pexels_api_key.is_empty());
         assert!(config.gallery.catalog_url.starts_with("https://"));
+    }
+
+    #[test]
+    fn the_config_holds_a_steam_user_but_never_a_password() {
+        // The account name is needed to invoke steamcmd. Credentials are
+        // steamcmd's to handle, so there is nowhere here to put one.
+        let text = toml::to_string_pretty(&Config::default()).unwrap();
+        assert!(text.contains("steam_user"));
+        assert!(!text.to_lowercase().contains("password"));
     }
 
     #[test]

@@ -16,6 +16,7 @@ use serde::Serialize;
 use wallflux_core::ipc::{Client, Request, Response, Status};
 use wallflux_core::gallery::{self, GalleryItem};
 use wallflux_core::library::Wallpaper;
+use wallflux_core::steam_workshop::{self, Sort as WorkshopSort, WorkshopItem};
 use std::os::unix::process::CommandExt as _;
 
 use tauri::Manager as _;
@@ -282,6 +283,67 @@ async fn gallery_download(item: GalleryItem) -> CmdResult<String> {
     .map_err(stringify)?
 }
 
+/// Lo que el taller devuelve, más el estado del entorno de descarga, para
+/// que la interfaz sepa si puede ofrecer el botón o tiene que explicar algo.
+#[derive(Serialize)]
+pub struct WorkshopView {
+    items: Vec<WorkshopItem>,
+    /// Cierto si steamcmd está disponible en el sistema.
+    steamcmd: bool,
+    /// Qué hacer si no lo está.
+    steamcmd_help: String,
+    /// Cuenta guardada en la configuración, si la hay.
+    steam_user: String,
+}
+
+#[tauri::command]
+async fn workshop_browse(query: String, sort: String, page: u32) -> CmdResult<WorkshopView> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let sort = match sort.as_str() {
+            "recent" => WorkshopSort::MostRecent,
+            "subscribed" => WorkshopSort::MostSubscribed,
+            _ => WorkshopSort::Trend,
+        };
+        let items = steam_workshop::browse(&query, sort, page).map_err(stringify)?;
+        let config = Config::load().unwrap_or_default();
+        Ok(WorkshopView {
+            items,
+            steamcmd: steam_workshop::steamcmd_path().is_some(),
+            steamcmd_help: steam_workshop::steamcmd_help().to_string(),
+            steam_user: config.workshop.steam_user,
+        })
+    })
+    .await
+    .map_err(stringify)?
+}
+
+/// Descarga un elemento con la cuenta del usuario y lo importa.
+#[tauri::command]
+async fn workshop_import(item_id: String, steam_user: String) -> CmdResult<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let staging = paths::cache_dir().map_err(stringify)?.join("steamcmd");
+        let library = paths::library_dir().map_err(stringify)?;
+        let downloaded =
+            steam_workshop::download_with_steamcmd(&item_id, &steam_user, &staging)
+                .map_err(stringify)?;
+        let id = steam_workshop::import_downloaded(&downloaded.path, &library)
+            .map_err(stringify)?;
+
+        // Recordar la cuenta solo cuando ha funcionado: guardar un nombre
+        // que Steam acaba de rechazar sería recordar un error.
+        let mut config = Config::load().unwrap_or_default();
+        if config.workshop.steam_user != steam_user {
+            config.workshop.steam_user = steam_user;
+            if let Err(err) = config.save() {
+                eprintln!("no se ha podido guardar la cuenta de Steam: {err:#}");
+            }
+        }
+        Ok(id)
+    })
+    .await
+    .map_err(stringify)?
+}
+
 #[tauri::command]
 fn library_path() -> CmdResult<PathBuf> {
     paths::library_dir().map_err(stringify)
@@ -327,6 +389,8 @@ pub fn run() {
             start_daemon,
             gallery_browse,
             gallery_download,
+            workshop_browse,
+            workshop_import,
         ])
         .run(tauri::generate_context!())
         .expect("error while running wallflux GUI");

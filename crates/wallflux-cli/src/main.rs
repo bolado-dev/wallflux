@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use wallflux_core::gallery::{self, GalleryItem, Source};
 use wallflux_core::ipc::{Client, PauseReason, Request, Response, Status};
+use wallflux_core::steam_workshop::{self, Sort as WorkshopSort};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -76,6 +77,46 @@ enum Command {
     Ping,
     /// Busca y descarga fondos libres de la galería en línea.
     Gallery(GalleryArgs),
+    /// Explora el taller de Wallpaper Engine en Steam, e importa con tu cuenta.
+    Workshop(WorkshopArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct WorkshopArgs {
+    /// Texto a buscar en el taller.
+    query: Option<String>,
+    /// Orden del listado.
+    #[arg(long, value_enum, default_value = "trend")]
+    sort: SortArg,
+    /// Página del listado, empezando en 1.
+    #[arg(long, default_value_t = 1)]
+    page: u32,
+    /// Descarga e importa estos ids. Necesita steamcmd y --steam-user.
+    #[arg(long, short, num_args = 1..)]
+    get: Vec<String>,
+    /// Cuenta de Steam que posee Wallpaper Engine.
+    #[arg(long)]
+    steam_user: Option<String>,
+    /// Muestra también los que no se pueden importar.
+    #[arg(long)]
+    all: bool,
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum SortArg {
+    Trend,
+    Recent,
+    Subscribed,
+}
+
+impl From<SortArg> for WorkshopSort {
+    fn from(value: SortArg) -> Self {
+        match value {
+            SortArg::Trend => WorkshopSort::Trend,
+            SortArg::Recent => WorkshopSort::MostRecent,
+            SortArg::Subscribed => WorkshopSort::MostSubscribed,
+        }
+    }
 }
 
 #[derive(clap::Args, Debug)]
@@ -106,6 +147,9 @@ fn run(args: Args) -> Result<()> {
     // momento más probable de usarla es antes de tener ninguno.
     if let Command::Gallery(gallery_args) = &args.command {
         return gallery_command(gallery_args, args.json);
+    }
+    if let Command::Workshop(workshop_args) = &args.command {
+        return workshop_command(workshop_args, args.json);
     }
 
     let mut client = Client::connect()?;
@@ -141,8 +185,8 @@ fn run(args: Args) -> Result<()> {
         Command::Reload => Request::ReloadConfig,
         Command::Shutdown => Request::Shutdown,
         Command::Ping => Request::Ping,
-        // Atendido arriba, antes de conectar con el daemon.
-        Command::Gallery(_) => unreachable!(),
+        // Atendidos arriba, antes de conectar con el daemon.
+        Command::Gallery(_) | Command::Workshop(_) => unreachable!(),
     };
 
     let response = client.request(&request)?;
@@ -306,6 +350,121 @@ fn gallery_command(args: &GalleryArgs, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Explora el taller de Steam y, con una cuenta que tenga la app, importa.
+fn workshop_command(args: &WorkshopArgs, json: bool) -> Result<()> {
+    // Descargar necesita cuenta; listar no. Por eso el listado va primero y
+    // sin pedir nada.
+    if !args.get.is_empty() {
+        return workshop_download(args);
+    }
+
+    let query = args.query.as_deref().unwrap_or_default();
+    let items = steam_workshop::browse(query, args.sort.into(), args.page)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&items)?);
+        return Ok(());
+    }
+    if items.is_empty() {
+        println!("El taller no ha devuelto nada para «{query}».");
+        return Ok(());
+    }
+
+    let shown: Vec<_> = if args.all {
+        items.iter().collect()
+    } else {
+        items.iter().filter(|item| item.kind.importable()).collect()
+    };
+
+    println!(
+        "{:<12} {:<44} {:<12} {:<8} ESTADO",
+        "ID", "TÍTULO", "RESOLUCIÓN", "TAMAÑO"
+    );
+    for item in &shown {
+        let status = if item.kind.importable() {
+            "se puede importar".to_string()
+        } else {
+            item.kind.reason().to_string()
+        };
+        println!(
+            "{:<12} {:<44} {:<12} {:<8} {status}",
+            item.id,
+            truncate(&item.title, 44),
+            item.resolution.as_deref().unwrap_or("—"),
+            human_size(item.file_size),
+        );
+    }
+
+    let importable = items.iter().filter(|item| item.kind.importable()).count();
+    println!(
+        "\n{importable} de {} son de vídeo e importables{}.",
+        items.len(),
+        if args.all {
+            ""
+        } else {
+            " (usa --all para ver el resto)"
+        }
+    );
+    println!(
+        "Descarga con: wallfluxctl workshop --get <id> --steam-user <tu cuenta>\n\
+         Necesita steamcmd y una cuenta que posea Wallpaper Engine: Steam no \
+         publica descarga directa de este contenido."
+    );
+    Ok(())
+}
+
+fn workshop_download(args: &WorkshopArgs) -> Result<()> {
+    let user = args
+        .steam_user
+        .as_deref()
+        .context("hace falta --steam-user: la descarga usa tu propia cuenta de Steam")?;
+    if steam_workshop::steamcmd_path().is_none() {
+        bail!("{}", steam_workshop::steamcmd_help());
+    }
+
+    let staging = wallflux_core::paths::cache_dir()?.join("steamcmd");
+    let library = wallflux_core::paths::library_dir()?;
+    let mut imported = 0;
+
+    for id in &args.get {
+        println!("descargando {id} con la cuenta {user}…");
+        let downloaded = match steam_workshop::download_with_steamcmd(id, user, &staging) {
+            Ok(downloaded) => downloaded,
+            Err(err) => {
+                eprintln!("{err:#}");
+                continue;
+            }
+        };
+        match steam_workshop::import_downloaded(&downloaded.path, &library) {
+            Ok(local) => {
+                println!("  importado como {local}");
+                imported += 1;
+            }
+            Err(err) => eprintln!("  no se ha importado: {err:#}"),
+        }
+    }
+
+    println!("\n{imported} fondo(s) en {}", library.display());
+    if wallflux_core::ipc::daemon_running()
+        && let Ok(mut client) = Client::connect()
+        && client.request(&Request::RescanLibrary).is_ok()
+    {
+        println!("el daemon en marcha ha reescaneado su biblioteca");
+    }
+    Ok(())
+}
+
+fn human_size(bytes: u64) -> String {
+    const MB: u64 = 1024 * 1024;
+    if bytes == 0 {
+        "—".to_string()
+    } else if bytes >= MB {
+        format!("{} MB", bytes / MB)
+    } else {
+        format!("{} KB", bytes / 1024)
+    }
+}
+
 /// Recorta a `width` caracteres — no bytes: un corte por bytes revienta con
 /// cualquier título acentuado.
 fn truncate(text: &str, width: usize) -> String {
@@ -411,6 +570,13 @@ mod tests {
         assert_eq!(truncate("un título larguísimo de fondo", 10), "un título…");
         // Por bytes esto entraría en pánico a mitad de un carácter.
         assert_eq!(truncate("ñññññññññññ", 5), "ññññ…");
+    }
+
+    #[test]
+    fn sizes_read_naturally() {
+        assert_eq!(human_size(0), "—");
+        assert_eq!(human_size(37_104_544), "35 MB");
+        assert_eq!(human_size(4096), "4 KB");
     }
 
     #[test]
