@@ -16,7 +16,9 @@ use serde::Serialize;
 use wallflux_core::ipc::{Client, Request, Response, Status};
 use wallflux_core::gallery::{self, GalleryItem};
 use wallflux_core::library::Wallpaper;
-use wallflux_core::steam_workshop::{self, Sort as WorkshopSort, WorkshopItem};
+use wallflux_core::steam_workshop::{
+    self, InstallOption, LoginCheck, Sort as WorkshopSort, WorkshopItem,
+};
 use std::os::unix::process::CommandExt as _;
 
 use tauri::Manager as _;
@@ -344,6 +346,53 @@ async fn workshop_import(item_id: String, steam_user: String) -> CmdResult<Strin
     .map_err(stringify)?
 }
 
+/// Todo lo que el asistente de Steam necesita saber de una vez, para que la
+/// interfaz no tenga que encadenar tres llamadas antes de pintar nada.
+#[derive(Serialize)]
+pub struct SteamSetup {
+    /// Ruta de steamcmd, si está instalado.
+    steamcmd_path: Option<String>,
+    /// Formas de instalarlo, con la de esta distro primero.
+    install_options: Vec<InstallOption>,
+    /// Cuenta guardada en la configuración.
+    steam_user: String,
+}
+
+#[tauri::command]
+async fn steam_setup() -> CmdResult<SteamSetup> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let config = Config::load().unwrap_or_default();
+        Ok(SteamSetup {
+            steamcmd_path: steam_workshop::steamcmd_path()
+                .map(|path| path.display().to_string()),
+            install_options: steam_workshop::install_options(),
+            steam_user: config.workshop.steam_user,
+        })
+    })
+    .await
+    .map_err(stringify)?
+}
+
+/// Comprueba si steamcmd ya tiene sesión para esta cuenta, y la guarda si la
+/// tiene. Puede tardar: arranca steamcmd de verdad.
+#[tauri::command]
+async fn steam_check_login(user: String) -> CmdResult<LoginCheck> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let check = steam_workshop::check_login(&user).map_err(stringify)?;
+        if check.logged_in {
+            let mut config = Config::load().unwrap_or_default();
+            let trimmed = user.trim();
+            if config.workshop.steam_user != trimmed {
+                config.workshop.steam_user = trimmed.to_string();
+                let _ = config.save();
+            }
+        }
+        Ok(check)
+    })
+    .await
+    .map_err(stringify)?
+}
+
 #[tauri::command]
 fn library_path() -> CmdResult<PathBuf> {
     paths::library_dir().map_err(stringify)
@@ -391,6 +440,8 @@ pub fn run() {
             gallery_download,
             workshop_browse,
             workshop_import,
+            steam_setup,
+            steam_check_login,
         ])
         .run(tauri::generate_context!())
         .expect("error while running wallflux GUI");

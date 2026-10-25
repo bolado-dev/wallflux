@@ -157,6 +157,23 @@ export interface WorkshopView {
   steam_user: string;
 }
 
+export interface InstallOption {
+  label: string;
+  command: string;
+  note: string | null;
+}
+
+export interface SteamSetup {
+  steamcmd_path: string | null;
+  install_options: InstallOption[];
+  steam_user: string;
+}
+
+export interface LoginCheck {
+  logged_in: boolean;
+  message: string;
+}
+
 export interface DaemonInfo {
   running: boolean;
   version: string | null;
@@ -189,6 +206,9 @@ export const api = {
     invoke<WorkshopView>("workshop_browse", { query, sort, page }),
   workshopImport: (itemId: string, steamUser: string) =>
     invoke<string>("workshop_import", { itemId, steamUser }),
+  steamSetup: () => invoke<SteamSetup>("steam_setup"),
+  steamCheckLogin: (user: string) =>
+    invoke<LoginCheck>("steam_check_login", { user }),
 };
 
 /** Por qué un fondo no se está moviendo, en palabras accionables. */

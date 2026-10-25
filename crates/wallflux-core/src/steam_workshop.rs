@@ -301,6 +301,181 @@ fn which(binary: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// One way to install steamcmd.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstallOption {
+    /// Distro or method this is for.
+    pub label: String,
+    pub command: String,
+    /// Caveat worth knowing before running it, if any.
+    pub note: Option<String>,
+}
+
+/// How to install steamcmd, with the option for *this* machine first.
+///
+/// Reading `/etc/os-release` rather than listing every distro and letting
+/// the user find theirs: the first command shown should be the one they can
+/// paste.
+pub fn install_options() -> Vec<InstallOption> {
+    let os_release = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+    let field = |key: &str| -> String {
+        os_release
+            .lines()
+            .find_map(|line| line.strip_prefix(key))
+            .unwrap_or("")
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+    };
+    let id = field("ID=");
+    let id_like = field("ID_LIKE=");
+    let is = |name: &str| id == name || id_like.split_whitespace().any(|part| part == name);
+
+    let debian = InstallOption {
+        label: "Debian, Ubuntu, Kali".to_string(),
+        command: "sudo apt install steamcmd".to_string(),
+        // The part people trip over: the package is in non-free, which is
+        // not enabled by default, so apt reports "no installation candidate"
+        // and it looks like the package does not exist.
+        note: Some(
+            "Está en el componente non-free. Si apt dice que no hay candidato, \
+             añádelo a /etc/apt/sources.list y vuelve a intentarlo."
+                .to_string(),
+        ),
+    };
+    let arch = InstallOption {
+        label: "Arch".to_string(),
+        command: "yay -S steamcmd".to_string(),
+        note: Some("Está en AUR, así que hace falta un ayudante como yay o paru.".to_string()),
+    };
+    let fedora = InstallOption {
+        label: "Fedora".to_string(),
+        command: "sudo dnf install steamcmd".to_string(),
+        note: Some("Necesita el repositorio RPM Fusion no-free.".to_string()),
+    };
+    let flatpak = InstallOption {
+        label: "Flatpak (cualquier distro)".to_string(),
+        command: "flatpak install flathub com.valvesoftware.SteamCmd".to_string(),
+        note: None,
+    };
+    let manual = InstallOption {
+        label: "Manual".to_string(),
+        command: "https://developer.valvesoftware.com/wiki/SteamCMD".to_string(),
+        note: Some(
+            "Descarga el tarball de Valve y apunta WALLFLUX_STEAMCMD al binario.".to_string(),
+        ),
+    };
+
+    let mut options = Vec::new();
+    if is("debian") {
+        options.push(debian.clone());
+    } else if is("arch") {
+        options.push(arch.clone());
+    } else if is("fedora") || is("rhel") {
+        options.push(fedora.clone());
+    }
+    for option in [debian, arch, fedora, flatpak, manual] {
+        if !options
+            .iter()
+            .any(|existing| existing.label == option.label)
+        {
+            options.push(option);
+        }
+    }
+    options
+}
+
+/// Whether steamcmd already has a cached session for `user`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoginCheck {
+    pub logged_in: bool,
+    /// What to tell the user, whichever way it went.
+    pub message: String,
+}
+
+/// Tests whether steamcmd can log in as `user` without asking anything.
+///
+/// Runs the real login with stdin closed and a deadline: if the session is
+/// cached it returns immediately, and if it is not, steamcmd fails trying to
+/// read a password instead of hanging forever waiting for one. That is the
+/// only way to answer "am I logged in?" — there is no status command, and
+/// poking at steamcmd's config files guesses at an undocumented layout.
+pub fn check_login(user: &str) -> Result<LoginCheck> {
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let user = user.trim();
+    if user.is_empty() {
+        bail!("escribe primero tu cuenta de Steam");
+    }
+    // El login anónimo conecta y parece correcto, pero no da acceso a
+    // contenido de aplicaciones de pago. Dejarlo pasar sería prometer algo
+    // que falla diez segundos más tarde, al descargar.
+    if user.eq_ignore_ascii_case("anonymous") {
+        bail!(
+            "el login anónimo no sirve: el contenido del taller de Wallpaper Engine \
+             solo está disponible para cuentas que poseen la aplicación"
+        );
+    }
+    let steamcmd = steamcmd_path().with_context(|| steamcmd_help().to_string())?;
+
+    let mut child = Command::new(&steamcmd)
+        .arg("+login")
+        .arg(user)
+        .arg("+quit")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("no se ha podido ejecutar {}", steamcmd.display()))?;
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            let output = child.wait_with_output()?;
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let logged_in = status.success() && looks_logged_in(&combined);
+            return Ok(LoginCheck {
+                message: if logged_in {
+                    format!("Sesión activa como {user}. Ya puedes descargar.")
+                } else {
+                    explain_steamcmd_failure(&combined)
+                },
+                logged_in,
+            });
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            return Ok(LoginCheck {
+                logged_in: false,
+                message: "steamcmd se ha quedado esperando. Suele significar que pide \
+                          contraseña: ejecútalo en una terminal para introducirla."
+                    .to_string(),
+            });
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// Did steamcmd actually authenticate?
+///
+/// Its exit code is useless here — it returns 0 after a failed login too —
+/// so this reads the output. `Waiting for user info...OK` is the line that
+/// only appears once authentication has gone through; on failure the output
+/// carries `FAILED` instead and never reaches that stage. Checked against
+/// real steamcmd output, which notably does *not* print "Logged in OK" the
+/// way much of the advice online claims.
+fn looks_logged_in(output: &str) -> bool {
+    let lower = output.to_lowercase();
+    if lower.contains("failed") {
+        return false;
+    }
+    lower.contains("waiting for user info") || lower.contains("logged in ok")
+}
+
 /// Advice for a machine with no steamcmd, written to be actionable rather
 /// than a shrug. Debian and Kali keep it in non-free, which is not enabled
 /// by default, so "apt install steamcmd" alone is often not enough.
@@ -732,6 +907,60 @@ mod tests {
         assert_eq!(item.rating.as_deref(), Some("Everyone"));
         assert_eq!(item.file_size, 37104544);
         assert!(item.url.ends_with("id=3825386273"));
+    }
+
+    #[test]
+    fn install_options_put_this_machine_first_and_list_the_rest() {
+        let options = install_options();
+        assert!(options.len() >= 5, "deberían estar todas las alternativas");
+        // Sin duplicados aunque la distro detectada ya estuviese en la lista.
+        let mut labels: Vec<_> = options.iter().map(|option| &option.label).collect();
+        let before = labels.len();
+        labels.sort();
+        labels.dedup();
+        assert_eq!(labels.len(), before);
+        // Flatpak y manual siempre valen, da igual la distro.
+        assert!(
+            options
+                .iter()
+                .any(|option| option.command.contains("flatpak"))
+        );
+        assert!(
+            options
+                .iter()
+                .any(|option| option.command.contains("developer.valvesoftware"))
+        );
+    }
+
+    #[test]
+    fn login_detection_matches_real_steamcmd_output() {
+        // Capturado de un steamcmd de verdad, códigos ANSI incluidos. La
+        // documentación oficiosa habla de "Logged in OK"; la salida real no
+        // lo dice, y por eso la detección mira "Waiting for user info".
+        let real_success = "Loading Steam API...\u{1b}[0mOK\n             Connecting anonymously to Steam Public...\u{1b}[0mOK\n             Waiting for client config...\u{1b}[0mOK\n             Waiting for user info...\u{1b}[0mOK\n";
+        assert!(looks_logged_in(real_success));
+
+        assert!(!looks_logged_in(
+            "Logging in user 'x' to Steam Public...\nFAILED login with result code Invalid Password"
+        ));
+        // Un FAILED posterior invalida la sesión aunque antes se avanzara.
+        assert!(!looks_logged_in(
+            "Waiting for user info...OK\nFAILED (Rate Limit Exceeded)"
+        ));
+        assert!(!looks_logged_in(""));
+    }
+
+    #[test]
+    fn the_anonymous_account_is_refused_with_the_reason() {
+        let err = check_login("anonymous").unwrap_err().to_string();
+        assert!(err.contains("poseen la aplicación"), "{err}");
+        assert!(check_login("ANONYMOUS").is_err(), "sin importar mayúsculas");
+    }
+
+    #[test]
+    fn checking_a_login_without_a_user_says_so() {
+        let err = check_login("   ").unwrap_err().to_string();
+        assert!(err.contains("cuenta de Steam"), "{err}");
     }
 
     #[test]

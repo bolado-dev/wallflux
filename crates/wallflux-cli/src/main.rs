@@ -100,6 +100,9 @@ struct WorkshopArgs {
     /// Muestra también los que no se pueden importar.
     #[arg(long)]
     all: bool,
+    /// Comprueba si steamcmd ya tiene sesión para esta cuenta y termina.
+    #[arg(long)]
+    check_login: bool,
 }
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
@@ -354,6 +357,9 @@ fn gallery_command(args: &GalleryArgs, json: bool) -> Result<()> {
 fn workshop_command(args: &WorkshopArgs, json: bool) -> Result<()> {
     // Descargar necesita cuenta; listar no. Por eso el listado va primero y
     // sin pedir nada.
+    if args.check_login {
+        return workshop_check_login(args);
+    }
     if !args.get.is_empty() {
         return workshop_download(args);
     }
@@ -422,6 +428,31 @@ fn workshop_command(args: &WorkshopArgs, json: bool) -> Result<()> {
          Necesita steamcmd y una cuenta que posea Wallpaper Engine: Steam no \
          publica descarga directa de este contenido."
     );
+    Ok(())
+}
+
+/// Dice si steamcmd puede entrar sin preguntar nada, y qué hacer si no.
+fn workshop_check_login(args: &WorkshopArgs) -> Result<()> {
+    let user = args
+        .steam_user
+        .as_deref()
+        .context("hace falta --steam-user con la cuenta a comprobar")?;
+
+    match steam_workshop::steamcmd_path() {
+        Some(path) => println!("steamcmd: {}", path.display()),
+        None => bail!("{}", steam_workshop::steamcmd_help()),
+    }
+
+    println!("comprobando la sesión de {user}… (arranca steamcmd, tarda un poco)");
+    let check = steam_workshop::check_login(user)?;
+    println!("{}", check.message);
+    if !check.logged_in {
+        println!(
+            "\nInicia sesión una vez en una terminal:\n  steamcmd +login {user} +quit\n\
+             Te pedirá la contraseña y el código de Steam Guard. Después queda \
+             guardada y wallflux puede descargar solo."
+        );
+    }
     Ok(())
 }
 

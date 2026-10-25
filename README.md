@@ -291,16 +291,46 @@ wallfluxctl workshop --get 3825386273 --steam-user tu-cuenta
 vacío: no publica descarga directa de este contenido, porque Wallpaper Engine
 es una aplicación de pago. El único camino a los bytes es una cuenta de Steam
 que la posea, y es el que wallflux usa — con `steamcmd`, la herramienta
-oficial de Valve. Tu contraseña no pasa por wallflux en ningún momento:
-autentícate una vez con
+oficial de Valve.
+
+### Dejar steamcmd listo
+
+La app trae un asistente de tres pasos, porque «instala steamcmd y
+autentícate» suena más fácil de lo que es:
+
+<p align="center">
+  <img src="docs/gui-steam-setup.png" alt="El asistente de steamcmd: detecta la instalación, da el comando de login con la cuenta ya rellenada, y comprueba la sesión" width="900">
+</p>
+
+1. **Instalar steamcmd.** El asistente lee `/etc/os-release` y pone primero
+   el comando de tu distro, con botón de copiar. En Debian y Kali el paquete
+   vive en `non-free`, que no viene activado, así que `apt install steamcmd`
+   a secas suele responder que no hay candidato — eso está avisado ahí mismo.
+2. **Iniciar sesión una vez, en una terminal.** Es obligatoriamente
+   interactivo: steamcmd pide la contraseña y el código de Steam Guard.
+   **Tu contraseña no pasa por wallflux en ningún momento.**
+
+   ```sh
+   steamcmd +login tu-cuenta +quit
+   ```
+
+   steamcmd guarda la sesión, así que esto se hace una sola vez.
+3. **Comprobar la sesión.** No existe ningún comando de estado en steamcmd,
+   así que wallflux lo ejecuta de verdad con la entrada cerrada: si la sesión
+   está guardada responde al instante, y si no, falla en lugar de quedarse
+   esperando una contraseña que nadie va a escribir.
+
+Desde la terminal es lo mismo:
 
 ```sh
-steamcmd +login tu-cuenta +quit
+wallfluxctl workshop --check-login --steam-user tu-cuenta
 ```
 
-y a partir de ahí las descargas van solas. Si Steam rechaza el acceso,
-wallflux traduce el error de steamcmd a algo accionable en vez de pasártelo
-en crudo.
+Si Steam rechaza el acceso, wallflux traduce la salida de steamcmd a algo
+accionable: «la cuenta no tiene Wallpaper Engine» en vez de `Access Denied`.
+Hace falta porque steamcmd **sale con código 0 incluso cuando el login
+falla**, así que el código de salida no sirve para nada y hay que leerle la
+salida.
 
 Lo que **no** hay aquí es ninguna forma de saltarse ese control. Existen
 sitios que redistribuyen contenido del taller sin la licencia; wallflux no

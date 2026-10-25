@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  AlertTriangle,
   Check,
   Download,
   ExternalLink,
@@ -28,6 +27,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { SteamSetup } from "@/components/SteamSetup";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -78,6 +78,8 @@ export function Workshop({
   const [busy, setBusy] = useState<string | null>(null);
   const [done, setDone] = useState<Set<string>>(new Set());
   const [steamUser, setSteamUser] = useState("");
+  /** Cierto una vez el asistente ha verificado la sesión. */
+  const [loginOk, setLoginOk] = useState(false);
   const latest = useRef(0);
 
   const browse = useCallback(
@@ -121,7 +123,9 @@ export function Workshop({
 
   const items = data?.items ?? [];
   const importable = items.filter((item) => workshopMayWork(item.kind)).length;
-  const ready = Boolean(data?.steamcmd) && steamUser.trim().length > 0;
+  // Descargar necesita steamcmd y una sesión verificada. Aceptar solo un
+  // nombre escrito llevaría a un fallo de steamcmd diez segundos después.
+  const ready = Boolean(data?.steamcmd) && loginOk;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -171,10 +175,13 @@ export function Workshop({
             </ToggleGroup>
           </div>
 
-          <Requirements
-            view={data}
-            steamUser={steamUser}
-            onSteamUser={setSteamUser}
+          <SteamSetup
+            user={steamUser}
+            onUserChange={setSteamUser}
+            onReady={(value) => {
+              setSteamUser(value);
+              setLoginOk(true);
+            }}
           />
         </div>
         <Separator />
@@ -226,56 +233,6 @@ export function Workshop({
         </p>
       </DialogContent>
     </Dialog>
-  );
-}
-
-/** Explica qué falta para poder descargar, y recoge la cuenta de Steam. */
-function Requirements({
-  view,
-  steamUser,
-  onSteamUser,
-}: {
-  view: WorkshopView | null;
-  steamUser: string;
-  onSteamUser: (value: string) => void;
-}) {
-  if (!view) return null;
-
-  if (!view.steamcmd) {
-    return (
-      <div className="flex gap-3 rounded-xl border border-foreground/20 bg-card p-3">
-        <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-        <div className="min-w-0 space-y-1">
-          <p className="text-sm font-medium">Falta steamcmd</p>
-          <pre className="overflow-x-auto font-mono text-[11px] whitespace-pre-wrap text-muted-foreground">
-            {view.steamcmd_help}
-          </pre>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex items-center gap-3">
-      <Input
-        value={steamUser}
-        onChange={(event) => onSteamUser(event.target.value)}
-        placeholder="Tu cuenta de Steam (la que tiene Wallpaper Engine)"
-        className="flex-1"
-      />
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="text-xs whitespace-nowrap text-muted-foreground">
-            ¿Por qué?
-          </span>
-        </TooltipTrigger>
-        <TooltipContent className="max-w-sm">
-          La contraseña no pasa por wallflux. Ejecuta{" "}
-          <code>steamcmd +login tu-cuenta +quit</code> una vez en una terminal
-          para autenticarte, y a partir de ahí las descargas van solas.
-        </TooltipContent>
-      </Tooltip>
-    </div>
   );
 }
 
