@@ -502,7 +502,7 @@ impl Player {
     pub fn video_size(&self) -> Option<(u32, u32)> {
         let width = self.get_property_i64("width")?;
         let height = self.get_property_i64("height")?;
-        (width > 0 && height > 0).then(|| (width as u32, height as u32))
+        (width > 0 && height > 0).then_some((width as u32, height as u32))
     }
 
     /// Clears the current file, releasing decoder memory while an output has

@@ -342,12 +342,6 @@ impl Gl {
         })
     }
 
-    /// Binds the window's own framebuffer again after drawing offscreen.
-    pub fn bind_default_framebuffer(&self) {
-        // SAFETY: core GL call with a context current.
-        unsafe { (self.bind_framebuffer)(FRAMEBUFFER, 0) }
-    }
-
     /// Paints the whole surface one colour. Used for outputs with no
     /// wallpaper, and once before the first frame so a new window never shows
     /// uninitialised memory.
