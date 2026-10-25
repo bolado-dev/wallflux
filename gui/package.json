@@ -2,6 +2,7 @@
   "name": "wallflux-gui",
   "private": true,
   "version": "0.1.0",
+  "packageManager": "pnpm@12.14.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -37,10 +38,5 @@
     "tailwindcss": "^4.3.3",
     "typescript": "^5.7",
     "vite": "^7"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
   }
 }

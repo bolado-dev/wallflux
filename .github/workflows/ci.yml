@@ -78,9 +78,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Sin `version:` a propósito: la acción lee el campo packageManager de
+      # gui/package.json, así que el CI usa exactamente la misma versión de
+      # pnpm que el desarrollo. Fijarla aquí es lo que hizo fallar el primer
+      # build, con un pnpm 10 que no conocía --allow-build.
       - uses: pnpm/action-setup@v4
         with:
-          version: 10
+          package_json_file: gui/package.json
 
       - uses: actions/setup-node@v4
         with:
