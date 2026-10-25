@@ -427,15 +427,35 @@ disabled = true         # deja esta pantalla en paz
 
 ### Cómo hacerlo barato
 
-Un vídeo 4K decodificado por software te va a costar un núcleo, lo haga el
-software de quien lo haga. Las palancas que de verdad importan, por orden:
+Medido en un portátil con render por software, salida 2880x1800, mpv a
+24 fps, consumo del daemon en porcentaje de un núcleo:
 
-1. **Recodifica el vídeo hacia abajo.** 1440x900 a 24 fps, escalado por la
-   GPU, es visualmente casi idéntico a 4K a 60 como fondo.
-2. `fps_cap`: un fondo a 24 fps parece vídeo; a 60 parece vídeo y cuesta el
-   doble.
-3. `render_scale = 0.5` si recodificar no es opción.
-4. Deja `pause_on_occlusion` activado.
+| Fuente del vídeo | `render_scale` 1.0 | `render_scale` 0.5 |
+| --- | --- | --- |
+| 1440x900 | 11,8 % | 17,1 % ← **peor** |
+| 3840x2160 | 66,2 % | 17,0 % |
+| en pausa (tapado) | **0,0 %** | **0,0 %** |
+
+Lo que esos números dicen, por orden de importancia:
+
+1. **La pausa por oclusión es gratis de verdad.** No "casi nada": cero. Es
+   con diferencia el mayor ahorro y viene activada.
+2. **La resolución del archivo es lo que manda.** El mismo fondo a 4K cuesta
+   casi seis veces más que a 1440x900. Recodificar hacia abajo gana a
+   cualquier ajuste.
+3. `fps_cap` escala casi lineal: a 24 fps cuesta la mitad que a 48.
+4. `render_scale` **solo ayuda si el vídeo es mayor que lo que se va a
+   dibujar.** Reduce el trabajo de escalado de mpv pero no la
+   decodificación, y añade un blit a resolución completa; con una fuente ya
+   pequeña ese blit es coste puro. wallflux compara la resolución real del
+   vídeo con el destino y se salta el paso cuando no puede ahorrar nada,
+   así que dejarlo en 0.5 nunca perjudica — simplemente no siempre hace algo.
+
+Para medirlo en tu equipo, con el portátil desenchufado:
+
+```sh
+./scripts/measure-power.sh
+```
 
 ## El formato de paquete
 

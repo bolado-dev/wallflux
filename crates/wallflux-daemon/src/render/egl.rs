@@ -276,16 +276,39 @@ impl Drop for Egl {
     }
 }
 
-/// The four GL calls wallflux makes on its own; everything else is mpv's job.
+/// The GL calls wallflux makes on its own; everything else is mpv's job.
 pub struct Gl {
     clear_color: unsafe extern "C" fn(f32, f32, f32, f32),
     clear: unsafe extern "C" fn(u32),
     viewport: unsafe extern "C" fn(i32, i32, i32, i32),
     finish: unsafe extern "C" fn(),
+    gen_framebuffers: unsafe extern "C" fn(i32, *mut u32),
+    delete_framebuffers: unsafe extern "C" fn(i32, *const u32),
+    bind_framebuffer: unsafe extern "C" fn(u32, u32),
+    framebuffer_texture_2d: unsafe extern "C" fn(u32, u32, u32, u32, i32),
+    check_framebuffer_status: unsafe extern "C" fn(u32) -> u32,
+    blit_framebuffer: unsafe extern "C" fn(i32, i32, i32, i32, i32, i32, i32, i32, u32, u32),
+    gen_textures: unsafe extern "C" fn(i32, *mut u32),
+    delete_textures: unsafe extern "C" fn(i32, *const u32),
+    bind_texture: unsafe extern "C" fn(u32, u32),
+    tex_image_2d: unsafe extern "C" fn(u32, i32, i32, i32, i32, i32, u32, u32, *const c_void),
+    tex_parameteri: unsafe extern "C" fn(u32, u32, i32),
 }
 
 /// `GL_COLOR_BUFFER_BIT`
 const COLOR_BUFFER_BIT: u32 = 0x0000_4000;
+const FRAMEBUFFER: u32 = 0x8D40;
+const READ_FRAMEBUFFER: u32 = 0x8CA8;
+const DRAW_FRAMEBUFFER: u32 = 0x8CA9;
+const COLOR_ATTACHMENT0: u32 = 0x8CE0;
+const FRAMEBUFFER_COMPLETE: u32 = 0x8CD5;
+const TEXTURE_2D: u32 = 0x0DE1;
+const TEXTURE_MIN_FILTER: u32 = 0x2801;
+const TEXTURE_MAG_FILTER: u32 = 0x2800;
+const LINEAR: i32 = 0x2601;
+const RGBA8: i32 = 0x8058;
+const RGBA: u32 = 0x1908;
+const UNSIGNED_BYTE: u32 = 0x1401;
 
 impl Gl {
     fn load(egl: &Egl) -> Result<Self> {
@@ -305,7 +328,24 @@ impl Gl {
             clear: resolve(egl, "glClear")?,
             viewport: resolve(egl, "glViewport")?,
             finish: resolve(egl, "glFinish")?,
+            gen_framebuffers: resolve(egl, "glGenFramebuffers")?,
+            delete_framebuffers: resolve(egl, "glDeleteFramebuffers")?,
+            bind_framebuffer: resolve(egl, "glBindFramebuffer")?,
+            framebuffer_texture_2d: resolve(egl, "glFramebufferTexture2D")?,
+            check_framebuffer_status: resolve(egl, "glCheckFramebufferStatus")?,
+            blit_framebuffer: resolve(egl, "glBlitFramebuffer")?,
+            gen_textures: resolve(egl, "glGenTextures")?,
+            delete_textures: resolve(egl, "glDeleteTextures")?,
+            bind_texture: resolve(egl, "glBindTexture")?,
+            tex_image_2d: resolve(egl, "glTexImage2D")?,
+            tex_parameteri: resolve(egl, "glTexParameteri")?,
         })
+    }
+
+    /// Binds the window's own framebuffer again after drawing offscreen.
+    pub fn bind_default_framebuffer(&self) {
+        // SAFETY: core GL call with a context current.
+        unsafe { (self.bind_framebuffer)(FRAMEBUFFER, 0) }
     }
 
     /// Paints the whole surface one colour. Used for outputs with no
@@ -326,5 +366,120 @@ impl Gl {
     pub fn finish(&self) {
         // SAFETY: core GL call, context current.
         unsafe { (self.finish)() }
+    }
+}
+
+/// An offscreen colour buffer, for rendering below the output's resolution.
+///
+/// This is what `render_scale` is: mpv draws into a texture of
+/// `scale × size`, and the result is stretched onto the window with a
+/// filtered blit. Decoding and all of mpv's per-pixel work then happen at
+/// the smaller size, which is where the saving comes from — at 0.5 it is a
+/// quarter of the pixels.
+pub struct Offscreen {
+    framebuffer: u32,
+    texture: u32,
+    width: u32,
+    height: u32,
+}
+
+impl Offscreen {
+    /// Creates a colour buffer of exactly `width × height`.
+    pub fn new(gl: &Gl, width: u32, height: u32) -> Result<Self> {
+        let width = width.max(1);
+        let height = height.max(1);
+        let mut texture = 0u32;
+        let mut framebuffer = 0u32;
+
+        // SAFETY: a GL context is current (the caller's contract) and every
+        // call below is core GL with in-range arguments. The ids come back
+        // from GL itself.
+        unsafe {
+            (gl.gen_textures)(1, &mut texture);
+            (gl.bind_texture)(TEXTURE_2D, texture);
+            (gl.tex_image_2d)(
+                TEXTURE_2D,
+                0,
+                RGBA8,
+                width as i32,
+                height as i32,
+                0,
+                RGBA,
+                UNSIGNED_BYTE,
+                std::ptr::null(),
+            );
+            // Linear on both: the whole point is that this gets stretched.
+            (gl.tex_parameteri)(TEXTURE_2D, TEXTURE_MIN_FILTER, LINEAR);
+            (gl.tex_parameteri)(TEXTURE_2D, TEXTURE_MAG_FILTER, LINEAR);
+            (gl.bind_texture)(TEXTURE_2D, 0);
+
+            (gl.gen_framebuffers)(1, &mut framebuffer);
+            (gl.bind_framebuffer)(FRAMEBUFFER, framebuffer);
+            (gl.framebuffer_texture_2d)(FRAMEBUFFER, COLOR_ATTACHMENT0, TEXTURE_2D, texture, 0);
+            let status = (gl.check_framebuffer_status)(FRAMEBUFFER);
+            (gl.bind_framebuffer)(FRAMEBUFFER, 0);
+
+            if status != FRAMEBUFFER_COMPLETE {
+                (gl.delete_framebuffers)(1, &framebuffer);
+                (gl.delete_textures)(1, &texture);
+                bail!("el framebuffer fuera de pantalla no está completo (0x{status:x})");
+            }
+        }
+
+        Ok(Self {
+            framebuffer,
+            texture,
+            width,
+            height,
+        })
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// The framebuffer id to hand to mpv.
+    pub fn framebuffer(&self) -> u32 {
+        self.framebuffer
+    }
+
+    pub fn bind(&self, gl: &Gl) {
+        // SAFETY: core GL call, context current, id owned by self.
+        unsafe { (gl.bind_framebuffer)(FRAMEBUFFER, self.framebuffer) }
+    }
+
+    /// Stretches this buffer onto the window and leaves the default
+    /// framebuffer bound.
+    pub fn blit_to_window(&self, gl: &Gl, width: u32, height: u32) {
+        // SAFETY: both framebuffers exist and the rectangles are within
+        // their sizes; LINEAR is valid for a colour-only blit.
+        unsafe {
+            (gl.bind_framebuffer)(READ_FRAMEBUFFER, self.framebuffer);
+            (gl.bind_framebuffer)(DRAW_FRAMEBUFFER, 0);
+            (gl.blit_framebuffer)(
+                0,
+                0,
+                self.width as i32,
+                self.height as i32,
+                0,
+                0,
+                width as i32,
+                height as i32,
+                COLOR_BUFFER_BIT,
+                LINEAR as u32,
+            );
+            (gl.bind_framebuffer)(FRAMEBUFFER, 0);
+        }
+    }
+
+    /// Frees the GL objects. Takes `gl` rather than implementing `Drop`
+    /// because releasing them needs the right context to be current, and a
+    /// destructor cannot guarantee that.
+    pub fn delete(self, gl: &Gl) {
+        // SAFETY: ids owned by self, deleted exactly once.
+        unsafe {
+            (gl.delete_framebuffers)(1, &self.framebuffer);
+            (gl.delete_textures)(1, &self.texture);
+        }
     }
 }

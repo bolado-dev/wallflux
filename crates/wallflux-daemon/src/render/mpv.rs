@@ -95,6 +95,9 @@ const EVENT_LOG_MESSAGE: c_int = 2;
 const EVENT_END_FILE: c_int = 7;
 const EVENT_FILE_LOADED: c_int = 8;
 
+/// `MPV_FORMAT_INT64`
+const FORMAT_INT64: c_int = 4;
+
 /// `MPV_RENDER_UPDATE_FRAME`: a new frame is ready to be drawn.
 const UPDATE_FRAME: u64 = 1;
 
@@ -107,6 +110,8 @@ type FnSetOptionString =
     unsafe extern "C" fn(*mut MpvHandle, *const c_char, *const c_char) -> c_int;
 type FnSetPropertyString =
     unsafe extern "C" fn(*mut MpvHandle, *const c_char, *const c_char) -> c_int;
+type FnGetProperty =
+    unsafe extern "C" fn(*mut MpvHandle, *const c_char, c_int, *mut c_void) -> c_int;
 type FnCommand = unsafe extern "C" fn(*mut MpvHandle, *mut *const c_char) -> c_int;
 type FnErrorString = unsafe extern "C" fn(c_int) -> *const c_char;
 type FnWaitEvent = unsafe extern "C" fn(*mut MpvHandle, f64) -> *mut MpvEvent;
@@ -133,6 +138,7 @@ struct Symbols {
     terminate_destroy: FnTerminateDestroy,
     set_option_string: FnSetOptionString,
     set_property_string: FnSetPropertyString,
+    get_property: FnGetProperty,
     command: FnCommand,
     error_string: FnErrorString,
     wait_event: FnWaitEvent,
@@ -198,6 +204,7 @@ fn load_symbols() -> Result<Symbols> {
             terminate_destroy: sym!("mpv_terminate_destroy", FnTerminateDestroy),
             set_option_string: sym!("mpv_set_option_string", FnSetOptionString),
             set_property_string: sym!("mpv_set_property_string", FnSetPropertyString),
+            get_property: sym!("mpv_get_property", FnGetProperty),
             command: sym!("mpv_command", FnCommand),
             error_string: sym!("mpv_error_string", FnErrorString),
             wait_event: sym!("mpv_wait_event", FnWaitEvent),
@@ -469,6 +476,35 @@ impl Player {
         check(code, &format!("cannot set mpv property {name}={value}"))
     }
 
+    /// Reads an integer property, or `None` when mpv does not have one yet.
+    ///
+    /// Used for the video's own dimensions, which only exist once a file is
+    /// loaded and decoding has started — so an absent value means "ask
+    /// again later", not "an error".
+    pub fn get_property_i64(&self, name: &str) -> Option<i64> {
+        let symbols = symbols().ok()?;
+        let c_name = CString::new(name).ok()?;
+        let mut value: i64 = 0;
+        // SAFETY: the name is NUL-terminated, and MPV_FORMAT_INT64 means
+        // mpv writes exactly an int64 through the pointer.
+        let code = unsafe {
+            (symbols.get_property)(
+                self.handle,
+                c_name.as_ptr(),
+                FORMAT_INT64,
+                &mut value as *mut i64 as *mut c_void,
+            )
+        };
+        (code >= 0).then_some(value)
+    }
+
+    /// The decoded video's own size, once mpv knows it.
+    pub fn video_size(&self) -> Option<(u32, u32)> {
+        let width = self.get_property_i64("width")?;
+        let height = self.get_property_i64("height")?;
+        (width > 0 && height > 0).then(|| (width as u32, height as u32))
+    }
+
     /// Clears the current file, releasing decoder memory while an output has
     /// no wallpaper.
     pub fn stop(&self) -> Result<()> {
@@ -498,9 +534,18 @@ impl Player {
     /// `flip_y` is true for EGL window surfaces, whose origin is top-left
     /// while GL's is bottom-left.
     pub fn render(&self, width: u32, height: u32, flip_y: bool) -> Result<()> {
+        self.render_to(0, width, height, flip_y)
+    }
+
+    /// Draws into a specific framebuffer. `0` is the window's own.
+    ///
+    /// Used by `render_scale`: mpv renders into an offscreen buffer at a
+    /// fraction of the output size, which is then stretched onto the
+    /// window, so mpv's per-pixel work happens at the smaller size.
+    pub fn render_to(&self, framebuffer: u32, width: u32, height: u32, flip_y: bool) -> Result<()> {
         let symbols = symbols()?;
         let mut fbo = MpvOpenglFbo {
-            fbo: 0,
+            fbo: framebuffer as c_int,
             w: width as c_int,
             h: height as c_int,
             // 0 means "whatever the surface is", which is what we want.

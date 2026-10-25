@@ -17,6 +17,7 @@ use wallflux_core::library::{Library, Wallpaper};
 use crate::backend::{Backend, BackendEvent, OutputInfo};
 use crate::policy::{self, Decision, PauseGate, Signals};
 use crate::power::PowerMonitor;
+use crate::render::egl::Offscreen;
 use crate::render::{Egl, Gl, Player, PlayerOptions, Surface};
 use crate::wake::Waker;
 
@@ -55,6 +56,11 @@ struct OutputRuntime {
     frames: u32,
     window_start: Instant,
     measured_fps: f32,
+    /// Present when rendering below the output's resolution. mpv draws into
+    /// this and it is stretched onto the window.
+    offscreen: Option<Offscreen>,
+    /// The scale `offscreen` was built for, so a config change rebuilds it.
+    render_scale: f32,
 }
 
 impl OutputRuntime {
@@ -191,6 +197,8 @@ impl Engine {
                 frames: 0,
                 window_start: Instant::now(),
                 measured_fps: 0.0,
+                offscreen: None,
+                render_scale: 1.0,
             },
         );
         tracing::info!(output = %info.name, width = info.width, height = info.height,
@@ -213,6 +221,9 @@ impl Engine {
             drop(runtime.player);
             if let Some(gl) = self.gl.get() {
                 let _ = self.egl.make_current(&runtime.surface);
+                if let Some(offscreen) = runtime.offscreen {
+                    offscreen.delete(gl);
+                }
                 gl.finish();
             }
             self.egl.destroy_surface(runtime.surface);
@@ -289,6 +300,7 @@ impl Engine {
         runtime.signals.has_wallpaper = true;
         runtime.signals.manual = false;
         runtime.fps_cap = wallpaper.fps_cap.unwrap_or(playback.fps_cap);
+        runtime.render_scale = playback.render_scale.clamp(0.1, 1.0);
         runtime.needs_redraw = true;
         runtime.next_frame = Instant::now();
         tracing::info!(output, wallpaper = %wallpaper.id, source = %wallpaper.source.display(),
@@ -515,6 +527,7 @@ impl Engine {
             let playback = self.config.playback_for(&name);
             if let Some(runtime) = self.outputs.get_mut(&name) {
                 runtime.fps_cap = playback.fps_cap;
+                runtime.render_scale = playback.render_scale.clamp(0.1, 1.0);
                 runtime.needs_redraw = true;
             }
         }
@@ -634,16 +647,59 @@ impl Engine {
         let (width, height) = runtime.surface.size();
         self.egl.make_current(&runtime.surface)?;
 
+        let gl = self.gl.get();
+
+        // Rebuild the offscreen buffer when the scale or the size changed.
+        // Below 1.0 mpv renders into it and the result is stretched onto the
+        // window, so every per-pixel cost — decode, scaling, shaders — is
+        // paid at the smaller size.
+        let source = runtime.player.as_ref().and_then(Player::video_size);
+        let wanted = scaled_size(width, height, runtime.render_scale, source);
+        if let Some(gl) = gl {
+            let current = runtime.offscreen.as_ref().map(Offscreen::size);
+            if current != wanted {
+                if let Some(old) = runtime.offscreen.take() {
+                    old.delete(gl);
+                }
+                if let Some((scaled_width, scaled_height)) = wanted {
+                    match Offscreen::new(gl, scaled_width, scaled_height) {
+                        Ok(offscreen) => runtime.offscreen = Some(offscreen),
+                        Err(err) => {
+                            // Not fatal: fall back to full resolution rather
+                            // than showing nothing.
+                            tracing::warn!(output = %name, %err,
+                                "sin búfer fuera de pantalla, se dibuja a resolución nativa");
+                            runtime.render_scale = 1.0;
+                        }
+                    }
+                }
+            }
+        }
+
         match &runtime.player {
             Some(player) => {
-                // flip_y: the default framebuffer's origin is bottom-left,
-                // which is upside down as far as mpv is concerned.
-                player.render(width, height, true)?;
+                match (&runtime.offscreen, gl) {
+                    (Some(offscreen), Some(gl)) => {
+                        let (scaled_width, scaled_height) = offscreen.size();
+                        offscreen.bind(gl);
+                        player.render_to(
+                            offscreen.framebuffer(),
+                            scaled_width,
+                            scaled_height,
+                            true,
+                        )?;
+                        offscreen.blit_to_window(gl, width, height);
+                    }
+                    // flip_y: the default framebuffer's origin is
+                    // bottom-left, which is upside down as far as mpv is
+                    // concerned.
+                    _ => player.render(width, height, true)?,
+                }
                 self.egl.swap_buffers(&runtime.surface)?;
                 player.report_swap();
             }
             None => {
-                if let Some(gl) = self.gl.get() {
+                if let Some(gl) = gl {
                     gl.clear(width, height, BLANK);
                 }
                 self.egl.swap_buffers(&runtime.surface)?;
@@ -674,6 +730,52 @@ impl Engine {
     }
 }
 
+/// The offscreen size for a scale, or `None` when rendering at full size.
+///
+/// `source` is the video's own resolution, when mpv has reported it. The
+/// check against it is the difference between a useful knob and a harmful
+/// one, and it is not obvious — measured on this project:
+///
+/// | source      | scale 1.0 | scale 0.5 |
+/// |-------------|-----------|-----------|
+/// | 1440x900    | 11.8 %    | 17.1 %    |
+/// | 3840x2160   | 66.2 %    | 17.0 %    |
+///
+/// Scaling down only saves mpv's per-pixel work; it never reduces decoding,
+/// and it adds a full-resolution blit. When the video is already smaller
+/// than the scaled target there is nothing to save and the blit is pure
+/// cost — which is why a small wallpaper got *more* expensive. So the
+/// offscreen pass is skipped unless the source is genuinely larger.
+///
+/// Rounded to even numbers: video decoders work in macroblocks and an odd
+/// dimension costs a padding pass for nothing.
+fn scaled_size(
+    width: u32,
+    height: u32,
+    scale: f32,
+    source: Option<(u32, u32)>,
+) -> Option<(u32, u32)> {
+    if !(0.1..0.999).contains(&scale) {
+        return None;
+    }
+    let round_even = |value: u32| -> u32 {
+        let scaled = (value as f32 * scale).round() as u32;
+        (scaled.max(2) / 2) * 2
+    };
+    let scaled = (round_even(width), round_even(height));
+
+    // Nothing to gain when the video is no bigger than what we would render
+    // into: mpv would be upscaling either way, and the extra blit is a cost
+    // with no matching saving.
+    if let Some((source_width, source_height)) = source
+        && source_width <= scaled.0
+        && source_height <= scaled.1
+    {
+        return None;
+    }
+    Some(scaled)
+}
+
 impl Drop for Engine {
     fn drop(&mut self) {
         // Order matters: players, then surfaces, then the backend's windows.
@@ -690,6 +792,55 @@ impl Drop for Engine {
 mod tests {
     use super::*;
     use crate::power::PowerSource;
+
+    /// Fuente 4K: el caso para el que existe el ajuste.
+    const BIG: Option<(u32, u32)> = Some((3840, 2160));
+
+    #[test]
+    fn full_scale_needs_no_offscreen_buffer() {
+        assert_eq!(scaled_size(2880, 1800, 1.0, BIG), None);
+        assert_eq!(scaled_size(2880, 1800, 0.999, BIG), None);
+    }
+
+    #[test]
+    fn half_scale_is_a_quarter_of_the_pixels() {
+        let (width, height) = scaled_size(2880, 1800, 0.5, BIG).unwrap();
+        assert_eq!((width, height), (1440, 900));
+        let full = 2880u64 * 1800;
+        let scaled = u64::from(width) * u64::from(height);
+        assert_eq!(full / scaled, 4);
+    }
+
+    #[test]
+    fn a_source_smaller_than_the_target_skips_the_offscreen_pass() {
+        // Medido: con una fuente de 1440x900 en una salida 2880x1800, el
+        // paso extra subía el consumo de 11.8 % a 17.1 %. No hay nada que
+        // ahorrar y el blit se paga igual.
+        assert_eq!(scaled_size(2880, 1800, 0.5, Some((1440, 900))), None);
+        // Justo en el límite tampoco compensa.
+        assert_eq!(scaled_size(2880, 1800, 0.5, Some((1440, 900))), None);
+        // Un píxel por encima sí: ya hay trabajo que recortar.
+        assert_eq!(
+            scaled_size(2880, 1800, 0.5, Some((1442, 902))),
+            Some((1440, 900))
+        );
+    }
+
+    #[test]
+    fn an_unknown_source_size_still_honours_the_setting() {
+        // mpv aún no ha cargado el archivo: se respeta lo pedido y en el
+        // siguiente fotograma ya se sabrá si merecía la pena.
+        assert_eq!(scaled_size(2880, 1800, 0.5, None), Some((1440, 900)));
+    }
+
+    #[test]
+    fn scaled_sizes_are_even_and_never_zero() {
+        let (width, height) = scaled_size(1921, 1081, 0.5, BIG).unwrap();
+        assert_eq!(width % 2, 0);
+        assert_eq!(height % 2, 0);
+        let (width, height) = scaled_size(10, 10, 0.1, BIG).unwrap();
+        assert!(width >= 2 && height >= 2);
+    }
 
     #[test]
     fn blank_is_opaque_black() {

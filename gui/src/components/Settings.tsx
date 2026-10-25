@@ -102,7 +102,7 @@ export function Settings({ config, open, onOpenChange, onSave }: Props) {
               <SliderField
                 icon={<Scaling />}
                 label="Escala de render"
-                hint="Dibuja más pequeño y escala; al 50% cuesta la cuarta parte"
+                hint="Dibuja más pequeño y escala. Solo ayuda si el vídeo es mayor que tu pantalla; si no, wallflux lo ignora."
                 value={Math.round(draft.playback.render_scale * 100)}
                 min={30}
                 max={100}

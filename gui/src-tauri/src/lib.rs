@@ -183,13 +183,23 @@ async fn start_daemon() -> CmdResult<()> {
         // Detached: the daemon must outlive this window, so it gets its own
         // session and its output goes nowhere rather than into a pipe that
         // fills up and blocks it.
-        Command::new(&binary)
+        let child = Command::new(&binary)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .process_group(0)
             .spawn()
             .map_err(|err| format!("cannot start {}: {err}", binary.display()))?;
+
+        // Reap it. The daemon runs in its own process group and outlives
+        // this window, but it is still our child: without a wait() it turns
+        // into a zombie the moment it exits, and sits in the process table
+        // for as long as the GUI is open. Observed in the wild as
+        // `[wallflux-daemon] <defunct>` parented to wallflux-gui.
+        std::thread::spawn(move || {
+            let mut child = child;
+            let _ = child.wait();
+        });
 
         // Wait for the socket rather than guessing at a sleep.
         let deadline = Instant::now() + Duration::from_secs(5);
