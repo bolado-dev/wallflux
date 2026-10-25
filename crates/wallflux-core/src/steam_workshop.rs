@@ -491,7 +491,11 @@ const FAILURE_MARKERS: &[&str] = &[
 ];
 
 /// Markers that only appear once authentication has succeeded.
-const SUCCESS_MARKERS: &[&str] = &["waiting for user info", "logged in ok"];
+const SUCCESS_MARKERS: &[&str] = &[
+    "logging in using cached credentials",
+    "waiting for user info",
+    "logged in ok",
+];
 
 /// Did steamcmd actually authenticate?
 ///
@@ -616,7 +620,15 @@ pub fn download_with_steamcmd(
         .join(APP_ID)
         .join(item_id);
     if !path.is_dir() {
-        bail!("{}", explain_steamcmd_failure(&combined));
+        // La explicación interpretada, y debajo lo que dijo steamcmd: una de
+        // las dos sobra hasta que no sobra.
+        match significant_lines(&combined) {
+            Some(detail) => bail!(
+                "{}\n\n--- lo que dijo steamcmd ---\n{detail}",
+                explain_steamcmd_failure(&combined)
+            ),
+            None => bail!("{}", explain_steamcmd_failure(&combined)),
+        }
     }
     Ok(Downloaded { path })
 }
@@ -646,10 +658,19 @@ pub fn explain_steamcmd_failure(output: &str) -> String {
                 descargar sin intervención."
             .to_string();
     }
-    if lower.contains("access denied") || lower.contains("failure") && lower.contains("0x") {
-        return "Steam ha denegado la descarga. Esto suele significar que la cuenta no \
-                tiene Wallpaper Engine: su contenido del taller solo está disponible \
-                para quien posee la aplicación."
+    // El caso real medido: con sesión válida y una app de pago que la cuenta
+    // no posee, steamcmd dice exactamente «ERROR! Download item N failed
+    // (Failure).» — sin más pistas. Verificado contra un item del taller de
+    // una app gratuita, que con la misma cuenta y la misma sesión descarga
+    // sin problema: lo que falta es la titularidad, no la autenticación.
+    if lower.contains("failed (failure)")
+        || lower.contains("access denied")
+        || (lower.contains("failure") && lower.contains("0x"))
+    {
+        return "Steam ha denegado la descarga pese a tener la sesión iniciada. \
+                Casi siempre significa que esa cuenta no posee Wallpaper Engine: \
+                el contenido de su taller solo está disponible para quien tiene la \
+                aplicación. Compruébalo en tu biblioteca de Steam."
             .to_string();
     }
     if lower.contains("timeout") {
@@ -1101,6 +1122,28 @@ mod tests {
     }
 
     #[test]
+    fn a_denied_download_blames_ownership_not_the_login() {
+        // Salida real: sesión correcta, app de pago que la cuenta no tiene.
+        let output = "Logging in user 'x' to Steam Public...OK\n\
+                      Waiting for user info...OK\n\
+                      Downloading item 3822803595 ...\n\
+                      ERROR! Download item 3822803595 failed (Failure).";
+        let advice = explain_steamcmd_failure(output);
+        assert!(advice.contains("no posee Wallpaper Engine"), "{advice}");
+        // Y no debe confundirse con un problema de autenticación.
+        assert!(!advice.contains("contraseña"), "{advice}");
+    }
+
+    #[test]
+    fn a_cached_session_counts_as_logged_in() {
+        // Línea observada en una sesión ya guardada.
+        assert!(looks_logged_in(
+            "Logging in using cached credentials.\n\
+             Logging in user 'x' [U:1:1] to Steam Public...OK"
+        ));
+    }
+
+    #[test]
     fn steamcmd_failures_are_translated_into_advice() {
         assert!(
             explain_steamcmd_failure("FAILED login with result code Invalid Password")
@@ -1109,7 +1152,7 @@ mod tests {
         assert!(explain_steamcmd_failure("Steam Guard code required").contains("Steam Guard"));
         assert!(
             explain_steamcmd_failure("ERROR! Download item failed (Access Denied).")
-                .contains("no tiene Wallpaper Engine")
+                .contains("no posee Wallpaper Engine")
         );
         // Anything unrecognised still tells the user what to run by hand.
         assert!(explain_steamcmd_failure("vaya").contains("workshop_download_item"));
