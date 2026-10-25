@@ -1,0 +1,23 @@
+[Unit]
+Description=wallflux animated wallpaper daemon
+Documentation=https://github.com/bolado-dev/wallflux
+# Start once a graphical session exists; the daemon needs a display server.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/wallflux-daemon
+ExecReload=%h/.cargo/bin/wallfluxctl reload
+Restart=on-failure
+RestartSec=2
+# The daemon talks to the display server and reads its own config; it has no
+# business anywhere else on the filesystem.
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.config/wallflux %t
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=graphical-session.target

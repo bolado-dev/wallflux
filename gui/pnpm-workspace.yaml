@@ -1,0 +1,6 @@
+allowBuilds:
+  esbuild: true
+# pnpm 10+ blocks package build scripts unless they are listed here. esbuild
+# is vite's bundler and needs its postinstall to fetch the native binary.
+onlyBuiltDependencies:
+  - esbuild

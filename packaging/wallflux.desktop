@@ -1,0 +1,29 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=wallflux
+GenericName=Fondos animados
+GenericName[en]=Animated Wallpaper
+Comment=Pon y gestiona fondos de pantalla animados
+Comment[en]=Set and manage animated video wallpapers
+Exec=wallflux-gui
+Icon=wallflux
+Terminal=false
+Categories=Settings;DesktopSettings;
+# Se busca en los dos idiomas: el lanzador compara contra estas palabras.
+Keywords=fondo;pantalla;animado;video;escritorio;wallpaper;animated;background;
+# Coincide con el WM_CLASS de la ventana de Tauri, para que el lanzador
+# agrupe la ventana con esta entrada en vez de mostrar un icono suelto.
+StartupWMClass=wallflux
+StartupNotify=true
+Actions=Pause;Resume;
+
+[Desktop Action Pause]
+Name=Pausar el fondo
+Name[en]=Pause the wallpaper
+Exec=wallfluxctl pause
+
+[Desktop Action Resume]
+Name=Reanudar el fondo
+Name[en]=Resume the wallpaper
+Exec=wallfluxctl resume

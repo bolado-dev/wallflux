@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = ["crates/wallflux-core", "crates/wallflux-daemon", "crates/wallflux-cli"]
+# The GUI is its own workspace: `cargo tauri` expects to own the manifest in
+# gui/src-tauri, and a daemon build should not have to compile webkit bindings.
+exclude = ["gui/src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/bolado-dev/wallflux"
+rust-version = "1.88"
+
+[workspace.dependencies]
+wallflux-core = { path = "crates/wallflux-core" }
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+directories = "6"
+libc = "0.2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

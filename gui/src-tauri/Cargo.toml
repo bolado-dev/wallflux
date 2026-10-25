@@ -1,0 +1,29 @@
+[package]
+name = "wallflux-gui"
+description = "Wallpaper library and settings for wallflux"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.88"
+
+[lib]
+name = "wallflux_gui_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+wallflux-core = { path = "../../crates/wallflux-core" }
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+toml = "0.9"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

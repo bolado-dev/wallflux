@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+# Una ejecución por rama: un push nuevo cancela el anterior en vez de hacer
+# cola detrás de él.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  rust:
+    name: Rust (daemon, CLI y núcleo)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formato
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+
+      # Sin dependencias del sistema a propósito: libmpv, libEGL y libwayland
+      # se cargan con dlopen en tiempo de ejecución, así que el daemon compila
+      # y se testea en una máquina sin ninguna de ellas. Si este job empieza a
+      # necesitar un `apt install`, es que alguien ha añadido un enlazado en
+      # tiempo de compilación sin querer.
+      - name: Tests
+        run: cargo test --workspace
+
+  gui-backend:
+    name: Backend de la interfaz (Tauri)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gui/src-tauri
+
+      # Tauri sí enlaza contra WebKit y GTK, al contrario que el daemon.
+      - name: Dependencias del sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libxdo-dev libssl-dev librsvg2-dev \
+            libgtk-3-dev libayatana-appindicator3-dev
+
+      - name: Clippy
+        working-directory: gui/src-tauri
+        run: cargo clippy --all-targets
+
+      - name: Tests
+        working-directory: gui/src-tauri
+        run: cargo test
+
+  frontend:
+    name: Interfaz (TypeScript)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: gui/pnpm-lock.yaml
+
+      # --allow-build: pnpm 10+ bloquea los scripts de instalación de las
+      # dependencias, y el postinstall de esbuild es el que descarga el
+      # binario nativo que usa vite. Sin esto el install "funciona" y deja un
+      # node_modules inservible.
+      - name: Instalar dependencias
+        working-directory: gui
+        run: pnpm install --frozen-lockfile --allow-build=esbuild
+
+      # `pnpm build` es `tsc --noEmit && vite build`: comprueba tipos y empaqueta.
+      - name: Comprobar tipos y compilar
+        working-directory: gui
+        run: pnpm build
