@@ -192,7 +192,10 @@ export function Gallery({
 
 function Grid({ children }: { children: React.ReactNode }) {
   return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-4">
+    // items-start: sin esto el grid estira cada tarjeta a la altura de la
+    // más alta de su fila, y como la imagen es el hijo flexible acaba
+    // creciendo con ella en vez de respetar su 16:9.
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] items-start gap-4">
       {children}
     </div>
   );
@@ -212,7 +215,7 @@ function GalleryCard({
   const [broken, setBroken] = useState(false);
   return (
     <div className="flex flex-col overflow-hidden rounded-xl border bg-card">
-      <div className="relative aspect-video w-full bg-black">
+      <div className="relative aspect-video w-full shrink-0 overflow-hidden bg-black">
         {item.preview_url && !broken ? (
           <img
             src={item.preview_url}

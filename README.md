@@ -42,7 +42,8 @@ wallflux es la versión libre y pequeña de la parte útil:
   TOML y un vídeo. Sin base de datos, sin cifrado, sin cuenta.
 - **Interfaz gráfica, CLI y socket.** Usa la que te encaje; las tres mandan
   sobre el mismo daemon.
-- **Importa desde Wallpaper Engine** los fondos de vídeo que ya tengas.
+- **Una galería integrada** de fondos libres, que se descargan con un clic
+  sin cuenta ni configuración.
 
 ## Estado
 
@@ -55,7 +56,7 @@ Alpha, y lo dice de frente:
 | Fondos de vídeo | Funcionan |
 | Fondos de shader (tipo Shadertoy) y web | Sin empezar; el formato de paquete les reserva sitio |
 | Interfaz gráfica | Funciona: biblioteca, destino por salida, ajustes en vivo |
-| Importar de Wallpaper Engine | Solo elementos de vídeo; ver más abajo |
+| Galería en línea | Funciona: catálogo curado, y Pexels con clave propia |
 
 ## Cómo funciona
 
@@ -221,49 +222,57 @@ fondo puesto desde `wallfluxctl` aparece aquí y al revés. Conviene saber:
   la ruta, el tamaño y la fecha del origen, de modo que recodificar un vídeo
   invalida su miniatura sin que nadie tenga que limpiar nada.
 
-## Importar desde Wallpaper Engine
+## La galería
 
-Si ya tienes Wallpaper Engine, wallflux puede coger los fondos de **vídeo** de
-tu carpeta del taller de Steam. Desde la interfaz, el botón *Wallpaper Engine*
-abre un explorador con todo lo que hay, importable o no:
+Si no tienes vídeos a mano, wallflux trae una galería de fondos de libre
+distribución. Sin cuenta, sin clave y sin instalar nada: el botón *Galería*
+abre el catálogo y un clic descarga el fondo a tu biblioteca.
 
 <p align="center">
-  <img src="docs/gui-engine.png" alt="El explorador de Wallpaper Engine: una rejilla con las vistas previas del taller de Steam, cada una con su tipo, botón de importar en las de vídeo y el motivo en gris en las que no se pueden importar" width="900">
+  <img src="docs/gui-gallery.png" alt="La galería: una rejilla de fondos libres con su resolución, su licencia, enlace a la ficha original y un botón de descarga" width="900">
 </p>
 
-Desde la terminal:
-
 ```sh
-$ wallfluxctl import-engine --list
-ID DEL TALLER  TIPO         TÍTULO                             ESTADO
-2222           scene        Fancy Particles                    las escenas usan un formato .pkg propietario
-3333           web          HTML Clock                         los fondos web aún no están soportados
-1111           video        Neon Drive                         se puede importar
-4444           video        Ocean Loop                         se puede importar
-
-2 de 4 elemento(s) se pueden importar.
-
-$ wallfluxctl import-engine --all
+wallfluxctl gallery                      # listar
+wallfluxctl gallery aurora               # filtrar
+wallfluxctl gallery --get commons-40304660
 ```
 
-Lee el `project.json`, copia el vídeo y su vista previa a tu biblioteca,
-escribe un manifiesto de wallflux con el título y las etiquetas originales, y
-pide al daemon en marcha que reescanee. Steam se busca en las rutas
-habituales; `--from <carpeta>` cubre una instalación fuera de lo común.
+Dos fuentes, y ninguna obligatoria:
 
-Qué se puede y qué no, por tipo de fondo:
+**El catálogo curado.** Un JSON versionado en este repositorio. No se escribe
+a mano: lo genera [`catalog/build.py`](catalog/build.py) desde la API abierta
+de Wikimedia Commons, filtrando a vídeo con licencia permisiva (CC0, CC BY,
+CC BY-SA o dominio público), resolución mínima de 1280 y un tamaño que no
+tarde una eternidad en bajar. **Cada URL se comprueba con una petición HEAD
+antes de entrar**, así que el fichero publicado no tiene enlaces rotos.
+Regenerarlo o ampliarlo es un comando:
 
-| Tipo | ¿Soportado? | Por qué |
-| --- | --- | --- |
-| `video` | **Sí** | Es un mp4 o webm normal junto al manifiesto |
-| `scene` | No | Un `.pkg` binario propietario. No hay especificación contra la que implementar, y adivinarla no es un objetivo del proyecto |
-| `web` | Todavía no | HTML y JavaScript; posible más adelante con una superficie de webview |
-| `application` | No | Un ejecutable, y no es algo que una herramienta de fondos deba lanzar |
+```sh
+./catalog/build.py > catalog/catalog.json
+```
 
-Los elementos se **copian**, no se enlazan: darte de baja en Steam borra la
-carpeta del taller, y una biblioteca llena de enlaces rotos es peor sorpresa
-que el espacio en disco. No se descarga nada y nada sale de tu máquina: esto
-solo lee ficheros que ya tienes.
+Hoy son trece fondos y pesan hacia el cielo nocturno, que es lo que Commons
+tiene en vídeo. Crecerá a base de pull requests — y de ahí la segunda fuente.
+
+**Pexels**, si pones tu clave gratuita en los ajustes o en
+`gallery.pexels_api_key`. Añade miles de vídeos y una búsqueda de verdad. Es
+estrictamente una mejora: sin clave la galería funciona entera. No hay
+ninguna clave en este repositorio a propósito — una clave subida a un repo
+público es la clave de todo el mundo, y dura hasta que la revocan.
+
+Cada descarga deja un paquete normal con su manifiesto, y ahí queda escrito
+el autor, la licencia y el enlace a la ficha original. CC BY y CC BY-SA
+piden atribución: si publicas una captura de tu escritorio, el crédito sale
+de ahí.
+
+### Sobre Wallpaper Engine
+
+wallflux **no** descarga fondos de Wallpaper Engine. Su catálogo vive en el
+Taller de Steam bajo una aplicación de pago, y las únicas formas de sacarlo
+sin tenerla funcionan saltándose ese control de acceso. No es una limitación
+técnica que falte resolver: es la razón por la que la galería usa fuentes de
+libre distribución.
 
 ## Actualizar
 
@@ -378,8 +387,9 @@ echo '{"kind":"status"}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/wallflux/daemon
 ## Estructura del repositorio
 
 ```
+catalog/                # el catálogo curado y el script que lo genera
 crates/
-├── wallflux-core/      # config, formato de paquete, tipos IPC — sin sistema de ventanas
+├── wallflux-core/      # config, formato de paquete, galería, tipos IPC
 ├── wallflux-daemon/
 │   ├── backend/        # x11.rs, wayland.rs
 │   ├── render/         # egl.rs, mpv.rs (FFI escrito a mano)
@@ -397,7 +407,7 @@ brand/                  # el logotipo y cómo regenerar el icono
 ## Desarrollo
 
 ```sh
-cargo test --workspace        # 79 tests, sin necesidad de servidor gráfico
+cargo test --workspace        # 80 tests, sin necesidad de servidor gráfico
 cargo clippy --workspace --all-targets
 ( cd gui/src-tauri && cargo test )   # 7 más para el backend de la interfaz
 ( cd gui && pnpm install --allow-build=esbuild && pnpm build )
