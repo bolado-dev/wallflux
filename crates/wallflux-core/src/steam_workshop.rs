@@ -567,6 +567,146 @@ pub fn steamcmd_help() -> &'static str {
      Si lo tienes en una ruta poco habitual, apúntala con WALLFLUX_STEAMCMD."
 }
 
+/// Whether the logged-in account owns Wallpaper Engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Ownership {
+    Owned,
+    NotOwned,
+    /// steamcmd truncated its licence listing, so absence proves nothing.
+    Unknown,
+}
+
+/// Asks steamcmd which licences the account holds and looks for this app.
+///
+/// `licenses_print` is read-only and fast, unlike the other way of finding
+/// out — asking to install the app and reading the refusal — which starts a
+/// download when the answer is yes.
+///
+/// The catch is that steamcmd abbreviates long app lists with
+/// `... (196 in total)`, so a missing id only proves anything when nothing
+/// was abbreviated. Hence three states rather than a boolean: claiming
+/// "you do not own this" from a truncated list would be a guess dressed up
+/// as a fact.
+pub fn check_ownership(user: &str) -> Result<Ownership> {
+    let steamcmd = steamcmd_path().with_context(|| steamcmd_help().to_string())?;
+    let output = Command::new(&steamcmd)
+        .arg("+login")
+        .arg(user.trim())
+        .arg("+licenses_print")
+        .arg("+quit")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .with_context(|| format!("no se ha podido ejecutar {}", steamcmd.display()))?;
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    match parse_ownership(&combined, APP_ID) {
+        // A positive from the licence list is certain; take it and stop.
+        Ownership::Owned => Ok(Ownership::Owned),
+        // Not conclusive, because steamcmd abbreviates long lists. Ask the
+        // question that cannot be abbreviated.
+        _ => probe_ownership(&steamcmd, user.trim()),
+    }
+}
+
+/// Asks steamcmd to install the app and reads only the first verdict.
+///
+/// `ERROR! Failed to install app '431960' (No subscription)` is unambiguous
+/// and arrives immediately. The reason this is not the first thing tried is
+/// the other branch: when the account *does* own it, steamcmd starts
+/// downloading the whole application. So the output is read line by line and
+/// the process is killed the instant either answer appears — nothing is left
+/// running and no real download begins.
+fn probe_ownership(steamcmd: &Path, user: &str) -> Result<Ownership> {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let scratch = crate::paths::cache_dir()?.join("ownership-probe");
+    crate::paths::ensure_dir(&scratch)?;
+
+    let mut child = Command::new(steamcmd)
+        .arg("+force_install_dir")
+        .arg(&scratch)
+        .arg("+login")
+        .arg(user)
+        .arg("+app_update")
+        .arg(APP_ID)
+        .arg("+quit")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("no se ha podido ejecutar {}", steamcmd.display()))?;
+
+    let verdict = (|| {
+        let stdout = child.stdout.take()?;
+        let deadline = Instant::now() + Duration::from_secs(90);
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            let lower = strip_ansi(&line).to_lowercase();
+            if lower.contains("no subscription") {
+                return Some(Ownership::NotOwned);
+            }
+            // Señales de que pasó el control de licencia y empezó a trabajar.
+            //
+            // Nada de "verifying install": steamcmd imprime «Verifying
+            // installation...» nada más arrancar, antes incluso del login, y
+            // esa línea llega antes que el «No subscription». Darla por
+            // buena hacía que la sonda afirmase lo contrario de la verdad.
+            if lower.contains("update state")
+                || lower.contains("downloading, progress")
+                || lower.starts_with("success! app")
+                || lower.contains("fully installed")
+            {
+                return Some(Ownership::Owned);
+            }
+            if Instant::now() > deadline {
+                return None;
+            }
+        }
+        None
+    })();
+
+    // Whatever happened, do not leave steamcmd pulling an application down.
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&scratch);
+
+    Ok(verdict.unwrap_or(Ownership::Unknown))
+}
+
+fn parse_ownership(output: &str, app_id: &str) -> Ownership {
+    let mut truncated = false;
+    for line in output.lines() {
+        let line = strip_ansi(line);
+        let Some((_, apps)) = line.split_once("Apps") else {
+            continue;
+        };
+        let Some((_, apps)) = apps.split_once(':') else {
+            continue;
+        };
+        if apps.contains("...") || apps.contains("in total") {
+            truncated = true;
+        }
+        if apps
+            .split(',')
+            .map(|part| part.trim().trim_end_matches(|c: char| !c.is_ascii_digit()))
+            .any(|id| id == app_id)
+        {
+            return Ownership::Owned;
+        }
+    }
+    if truncated {
+        Ownership::Unknown
+    } else {
+        Ownership::NotOwned
+    }
+}
+
 /// Result of a download attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Downloaded {
@@ -622,12 +762,34 @@ pub fn download_with_steamcmd(
     if !path.is_dir() {
         // La explicación interpretada, y debajo lo que dijo steamcmd: una de
         // las dos sobra hasta que no sobra.
+        let mut message = explain_steamcmd_failure(&combined);
+        // Una denegación genérica merece una respuesta firme en vez de un
+        // "casi siempre significa": si el fallo apunta a la titularidad,
+        // se comprueba de verdad antes de echarle la culpa a la cuenta.
+        if combined.to_lowercase().contains("failed (failure)")
+            && let Ok(ownership) = check_ownership(steam_user)
+        {
+            message = match ownership {
+                Ownership::NotOwned => format!(
+                    "Confirmado: la cuenta {} no tiene Wallpaper Engine en sus \
+                     licencias, y el contenido de su taller solo está disponible \
+                     para quien posee la aplicación.",
+                    steam_user.trim()
+                ),
+                Ownership::Owned => format!(
+                    "La cuenta {} sí tiene Wallpaper Engine, así que el problema no \
+                     es la licencia. Puede ser un elemento retirado o restringido; \
+                     prueba con otro.",
+                    steam_user.trim()
+                ),
+                // Sigue sin poder afirmarse nada: se deja la redacción
+                // prudente en vez de inventar una certeza.
+                Ownership::Unknown => message,
+            };
+        }
         match significant_lines(&combined) {
-            Some(detail) => bail!(
-                "{}\n\n--- lo que dijo steamcmd ---\n{detail}",
-                explain_steamcmd_failure(&combined)
-            ),
-            None => bail!("{}", explain_steamcmd_failure(&combined)),
+            Some(detail) => bail!("{message}\n\n--- lo que dijo steamcmd ---\n{detail}"),
+            None => bail!("{message}"),
         }
     }
     Ok(Downloaded { path })
@@ -1119,6 +1281,58 @@ mod tests {
     fn checking_a_login_without_a_user_says_so() {
         let err = check_login("   ").unwrap_err().to_string();
         assert!(err.contains("cuenta de Steam"), "{err}");
+    }
+
+    /// Formato real de `licenses_print`, con la abreviación incluida.
+    const REAL_LICENSES: &str = concat!(
+        "License packageID 0:\n",
+        " - State   : Active (flags 0x200) - Purchased : Mon Oct 18 2021, Complimentary\n",
+        " - Apps\t: 5, 7, 8, 90, 205, 211, 440, 570, ... (196 in total)\n",
+        "License packageID 19007:\n",
+        " - Apps\t: 227300, 388478, 421800, 1650650,  (13 in total)\n",
+    );
+
+    /// Las líneas que steamcmd escupe antes de hacer nada útil. Ninguna
+    /// puede contar como señal de que la cuenta posee la aplicación.
+    #[test]
+    fn startup_noise_is_not_mistaken_for_ownership() {
+        for noise in [
+            "[----] Verifying installation...",
+            "Steam Console Client (c) Valve Corporation",
+            "Loading Steam API...OK",
+            "UpdateUI: skip show logo",
+        ] {
+            let lower = strip_ansi(noise).to_lowercase();
+            let looks_owned = lower.contains("update state")
+                || lower.contains("downloading, progress")
+                || lower.starts_with("success! app")
+                || lower.contains("fully installed");
+            assert!(!looks_owned, "«{noise}» no debería implicar titularidad");
+        }
+    }
+
+    #[test]
+    fn ownership_says_unknown_when_the_listing_was_abbreviated() {
+        // El id podría estar en el trozo que steamcmd no imprimió, así que
+        // afirmar "no la tienes" sería una suposición disfrazada de dato.
+        assert_eq!(parse_ownership(REAL_LICENSES, "431960"), Ownership::Unknown);
+    }
+
+    #[test]
+    fn ownership_is_certain_when_the_app_is_listed() {
+        assert_eq!(parse_ownership(REAL_LICENSES, "440"), Ownership::Owned);
+        assert_eq!(parse_ownership(REAL_LICENSES, "227300"), Ownership::Owned);
+    }
+
+    #[test]
+    fn ownership_is_a_definite_no_when_nothing_was_abbreviated() {
+        let complete = "License packageID 1:\n - Apps\t: 100, 200, 300,  (3 in total)\n";
+        // Ojo: "(3 in total)" también cuenta como abreviado por prudencia,
+        // así que un listado realmente completo no lleva esa coletilla.
+        let plain = "License packageID 1:\n - Apps\t: 100, 200, 300\n";
+        assert_eq!(parse_ownership(plain, "431960"), Ownership::NotOwned);
+        assert_eq!(parse_ownership(plain, "200"), Ownership::Owned);
+        assert_eq!(parse_ownership(complete, "431960"), Ownership::Unknown);
     }
 
     #[test]
