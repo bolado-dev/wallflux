@@ -64,6 +64,7 @@ export function SteamSetup({ onReady, user, onUserChange }: Props) {
       setCheck({
         logged_in: false,
         message: typeof err === "string" ? err : String(err),
+        detail: null,
       });
     } finally {
       setChecking(false);
@@ -163,6 +164,19 @@ export function SteamSetup({ onReady, user, onUserChange }: Props) {
             )}
             {check.message}
           </p>
+        )}
+        {/* La salida en crudo, plegada. La primera versión de esta
+            comprobación daba un falso negativo y sin esto no había forma de
+            verlo desde fuera. */}
+        {check?.detail && !check.logged_in && (
+          <details className="pt-2">
+            <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">
+              Ver lo que dijo steamcmd
+            </summary>
+            <pre className="mt-1.5 max-h-40 overflow-auto rounded-lg bg-muted p-2.5 font-mono text-[10px] whitespace-pre-wrap">
+              {check.detail}
+            </pre>
+          </details>
         )}
         {checking && (
           <p className="pt-1 text-[11px] text-muted-foreground">

@@ -390,6 +390,12 @@ pub struct LoginCheck {
     pub logged_in: bool,
     /// What to tell the user, whichever way it went.
     pub message: String,
+    /// The lines of steamcmd output that led to that verdict.
+    ///
+    /// Shown as small print rather than hidden: the first version of this
+    /// check was wrong for a reason that was invisible without it, and
+    /// guessing at someone else's steamcmd output is not debugging.
+    pub detail: Option<String>,
 }
 
 /// Tests whether steamcmd can log in as `user` without asking anything.
@@ -437,13 +443,17 @@ pub fn check_login(user: &str) -> Result<LoginCheck> {
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
-            let logged_in = status.success() && looks_logged_in(&combined);
+            // El código de salida no se mira: steamcmd devuelve 0 también
+            // cuando el login falla. Lo único que informa es la salida.
+            let _ = status;
+            let logged_in = looks_logged_in(&combined);
             return Ok(LoginCheck {
                 message: if logged_in {
                     format!("Sesión activa como {user}. Ya puedes descargar.")
                 } else {
                     explain_steamcmd_failure(&combined)
                 },
+                detail: significant_lines(&combined),
                 logged_in,
             });
         }
@@ -454,26 +464,88 @@ pub fn check_login(user: &str) -> Result<LoginCheck> {
                 message: "steamcmd se ha quedado esperando. Suele significar que pide \
                           contraseña: ejecútalo en una terminal para introducirla."
                     .to_string(),
+                detail: None,
             });
         }
         std::thread::sleep(Duration::from_millis(200));
     }
 }
 
+/// Markers that mean the login did **not** go through.
+///
+/// Deliberately specific phrases and not the bare word "failed". steamcmd
+/// opens every run with
+/// `WARNING: setlocale('en_US.UTF-8') failed, using locale: 'C'`,
+/// so a substring match on "failed" reports a failure on every machine
+/// whose locale it cannot set — which is most of them. That was a real bug
+/// here, and it made the check answer "not logged in" to everybody.
+const FAILURE_MARKERS: &[&str] = &[
+    "cached credentials not found",
+    "invalid password",
+    "login failure",
+    "failed login",
+    "account logon denied",
+    "rate limit exceeded",
+    "two-factor code mismatch",
+    "error (",
+];
+
+/// Markers that only appear once authentication has succeeded.
+const SUCCESS_MARKERS: &[&str] = &["waiting for user info", "logged in ok"];
+
 /// Did steamcmd actually authenticate?
 ///
-/// Its exit code is useless here — it returns 0 after a failed login too —
-/// so this reads the output. `Waiting for user info...OK` is the line that
-/// only appears once authentication has gone through; on failure the output
-/// carries `FAILED` instead and never reaches that stage. Checked against
-/// real steamcmd output, which notably does *not* print "Logged in OK" the
-/// way much of the advice online claims.
+/// Read from the output, because the exit code is worthless: steamcmd
+/// returns 0 after a failed login too. Checked against captured output from
+/// a real steamcmd, both the success and the failure path.
 fn looks_logged_in(output: &str) -> bool {
     let lower = output.to_lowercase();
-    if lower.contains("failed") {
+    if FAILURE_MARKERS.iter().any(|marker| lower.contains(marker)) {
         return false;
     }
-    lower.contains("waiting for user info") || lower.contains("logged in ok")
+    SUCCESS_MARKERS.iter().any(|marker| lower.contains(marker))
+}
+
+/// The handful of output lines worth showing a human, with the noise
+/// (progress bars, update checks, the locale warning) left out.
+fn significant_lines(output: &str) -> Option<String> {
+    let kept: Vec<String> = output
+        .lines()
+        .map(strip_ansi)
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .filter(|line| {
+            let lower = line.to_lowercase();
+            !lower.contains("setlocale")
+                && !lower.contains("checking for available updates")
+                && !lower.contains("verifying installation")
+                && !lower.contains("downloading update")
+                && !lower.contains("redirecting stderr")
+                && !lower.contains("logging directory")
+                && !lower.starts_with("[----]")
+        })
+        .collect();
+    (!kept.is_empty()).then(|| kept.join("\n"))
+}
+
+/// Removes the CSI escape sequences steamcmd sprinkles through its output.
+/// They render as literal noise in a GUI.
+fn strip_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            out.push(ch);
+            continue;
+        }
+        // CSI: ESC [ parameters, ending in a letter.
+        for next in chars.by_ref() {
+            if next.is_ascii_alphabetic() {
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// Advice for a machine with no steamcmd, written to be actionable rather
@@ -554,6 +626,14 @@ pub fn download_with_steamcmd(
 /// output is all there is to go on.
 pub fn explain_steamcmd_failure(output: &str) -> String {
     let lower = output.to_lowercase();
+    // El caso más común con diferencia, y el que tiene la instrucción más
+    // concreta: nunca se ha hecho el login interactivo en esta máquina.
+    if lower.contains("cached credentials not found") {
+        return "steamcmd no tiene sesión guardada para esa cuenta. Ejecuta \
+                `steamcmd +login <usuario> +quit` en una terminal: te pedirá la \
+                contraseña y el código de Steam Guard una sola vez."
+            .to_string();
+    }
     if lower.contains("invalid password") || lower.contains("login failure") {
         return "Steam ha rechazado el inicio de sesión. Ejecuta \
                 `steamcmd +login <usuario> +quit` en una terminal para \
@@ -930,6 +1010,63 @@ mod tests {
                 .iter()
                 .any(|option| option.command.contains("developer.valvesoftware"))
         );
+    }
+
+    /// Salida real de un steamcmd que SÍ entra (login anónimo), tal cual.
+    const REAL_SUCCESS: &str = concat!(
+        "WARNING: setlocale('en_US.UTF-8') failed, using locale: 'C'.",
+        " International characters may not work.\n",
+        "Steam Console Client (c) Valve Corporation\n",
+        "Loading Steam API...\u{1b}[0mOK\n",
+        "Connecting anonymously to Steam Public...\u{1b}[0mOK\n",
+        "Waiting for client config...\u{1b}[0mOK\n",
+        "Waiting for user info...\u{1b}[0mOK\n",
+    );
+
+    /// Salida real cuando no hay sesión guardada y stdin está cerrado.
+    const REAL_FAILURE: &str = concat!(
+        "WARNING: setlocale('en_US.UTF-8') failed, using locale: 'C'.\n",
+        "[----] Verifying installation...\n",
+        "Loading Steam API...\u{1b}[0mOK\n",
+        "\u{1b}[1mCached credentials not found.\n",
+        "password: \u{1b}[0m\u{1b}[1m\n",
+        "Logging in user 'x' [U:1:0] to Steam Public...\u{1b}[0mERROR (Invalid Password)\n",
+    );
+
+    #[test]
+    fn the_locale_warning_does_not_count_as_a_failure() {
+        // El bug que hubo: steamcmd abre cada ejecución con
+        // "setlocale(...) failed", así que un contains("failed") daba
+        // "no has iniciado sesión" a todo el mundo, hiciera lo que hiciera.
+        assert!(
+            REAL_SUCCESS.contains("failed"),
+            "el aviso tiene que estar en el fixture"
+        );
+        assert!(looks_logged_in(REAL_SUCCESS));
+    }
+
+    #[test]
+    fn the_real_failure_output_is_recognised() {
+        assert!(!looks_logged_in(REAL_FAILURE));
+        let advice = explain_steamcmd_failure(REAL_FAILURE);
+        assert!(advice.contains("no tiene sesión guardada"), "{advice}");
+    }
+
+    #[test]
+    fn the_detail_drops_the_noise_and_the_escape_codes() {
+        let detail = significant_lines(REAL_FAILURE).unwrap();
+        assert!(!detail.contains("setlocale"), "sobra el aviso de locale");
+        assert!(!detail.contains("Verifying installation"));
+        assert!(!detail.contains('\u{1b}'), "no deben quedar códigos ANSI");
+        assert!(detail.contains("Cached credentials not found"));
+        assert!(detail.contains("ERROR (Invalid Password)"));
+    }
+
+    #[test]
+    fn stripping_ansi_leaves_the_text_alone() {
+        assert_eq!(strip_ansi("Loading\u{1b}[0mOK"), "LoadingOK");
+        assert_eq!(strip_ansi("sin códigos"), "sin códigos");
+        assert_eq!(strip_ansi("\u{1b}[1mnegrita\u{1b}[0m"), "negrita");
     }
 
     #[test]

@@ -172,6 +172,8 @@ export interface SteamSetup {
 export interface LoginCheck {
   logged_in: boolean;
   message: string;
+  /** Las líneas de steamcmd que llevaron a ese veredicto. */
+  detail: string | null;
 }
 
 export interface DaemonInfo {

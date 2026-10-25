@@ -446,6 +446,9 @@ fn workshop_check_login(args: &WorkshopArgs) -> Result<()> {
     println!("comprobando la sesión de {user}… (arranca steamcmd, tarda un poco)");
     let check = steam_workshop::check_login(user)?;
     println!("{}", check.message);
+    if let Some(detail) = &check.detail {
+        println!("\n--- lo que dijo steamcmd ---\n{detail}");
+    }
     if !check.logged_in {
         println!(
             "\nInicia sesión una vez en una terminal:\n  steamcmd +login {user} +quit\n\
