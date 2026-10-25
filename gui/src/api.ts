@@ -85,36 +85,42 @@ export interface OutputConfig {
   disabled: boolean;
 }
 
+export interface GalleryConfig {
+  catalog_url: string;
+  pexels_api_key: string;
+}
+
 export interface Config {
   version: number;
   playback: PlaybackConfig;
   power: PowerConfig;
+  gallery: GalleryConfig;
   outputs: Record<string, OutputConfig>;
 }
 
-export type EngineItemKind =
-  | "video"
-  | "scene"
-  | "web"
-  | "application"
-  | "unknown";
+export type GallerySource = "curated" | "pexels";
 
-export interface EngineItem {
-  workshop_id: string;
+export interface GalleryItem {
+  id: string;
   title: string;
-  kind: EngineItemKind;
-  /** The video file, when the item has one. */
-  source: string | null;
-  preview: string | null;
+  author: string | null;
+  license: string;
+  source_url: string | null;
+  video_url: string;
+  preview_url: string | null;
   tags: string[];
-  content_rating: string | null;
-  root: string;
+  width: number | null;
+  height: number | null;
+  duration_secs: number | null;
+  source: GallerySource;
 }
 
-export interface EngineLibrary {
-  items: EngineItem[];
-  /** Directories that were searched, for the empty state. */
-  searched: string[];
+export interface GalleryView {
+  items: GalleryItem[];
+  /** Cierto cuando hay clave de Pexels configurada. */
+  pexels_enabled: boolean;
+  /** Aviso no fatal: p. ej. Pexels falló pero el catálogo cargó. */
+  warning: string | null;
 }
 
 export interface DaemonInfo {
@@ -141,9 +147,10 @@ export const api = {
     invoke<string>("import_wallpaper", { path, title: title ?? null }),
   libraryPath: () => invoke<string>("library_path"),
   startDaemon: () => invoke<void>("start_daemon"),
-  engineScan: () => invoke<EngineLibrary>("engine_scan"),
-  engineImport: (workshopId: string) =>
-    invoke<string>("engine_import", { workshopId }),
+  galleryBrowse: (query: string) =>
+    invoke<GalleryView>("gallery_browse", { query }),
+  galleryDownload: (item: GalleryItem) =>
+    invoke<string>("gallery_download", { item }),
 };
 
 /** Por qué un fondo no se está moviendo, en palabras accionables. */
@@ -161,26 +168,5 @@ export function describePause(reason: PauseReason | null): string {
       return "Sin fondo";
     default:
       return "En pausa";
-  }
-}
-
-/**
- * Por qué un elemento de Wallpaper Engine se puede importar o no.
- *
- * Mismas razones que da el daemon, en el idioma de la interfaz: el usuario
- * merece saber por qué falta la mitad de su biblioteca.
- */
-export function describeEngineKind(kind: EngineItemKind): string {
-  switch (kind) {
-    case "video":
-      return "Se puede importar";
-    case "scene":
-      return "Las escenas usan un formato .pkg propietario";
-    case "web":
-      return "Los fondos web aún no están soportados";
-    case "application":
-      return "Los fondos de tipo aplicación son ejecutables";
-    default:
-      return "Tipo de fondo no reconocido";
   }
 }

@@ -5,15 +5,14 @@
 //! independently as long as the types below stay compatible.
 
 pub mod config;
+pub mod gallery;
 pub mod ipc;
 pub mod library;
 pub mod paths;
-pub mod wallpaper_engine;
 
-pub use config::{Config, PlaybackConfig, PowerConfig, ScaleMode};
+pub use config::{Config, GalleryConfig, PlaybackConfig, PowerConfig, ScaleMode};
 pub use ipc::{OutputState, Request, Response, Status};
 pub use library::{Library, Wallpaper, WallpaperKind};
-pub use wallpaper_engine::{Item as EngineItem, ItemKind as EngineItemKind};
 
 /// Bumped whenever the on-disk config layout changes in a way that needs
 /// migrating. Written to `config.toml` so an older daemon refuses a newer file

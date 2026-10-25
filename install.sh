@@ -315,6 +315,12 @@ battery_fps_cap = 15
 # [outputs."eDP-1"]
 # wallpaper = "neon-city"
 # fps_cap = 24
+
+[gallery]
+# El catálogo curado no necesita cuenta ni clave.
+# Pexels es opcional: pon aquí tu clave gratuita de pexels.com/api para
+# buscar además en su biblioteca.
+pexels_api_key = ""
 TOML
     ok "config: $config_dir/config.toml (escritos los valores por defecto)"
   fi
@@ -571,7 +577,7 @@ ${C_BOLD}Siguientes pasos${C_RESET}
      ${C_DIM}wallfluxctl list${C_RESET}
      ${C_DIM}wallfluxctl set <id>${C_RESET}
 
-  ¿Ya tienes Wallpaper Engine? ${C_DIM}wallfluxctl import-engine --list${C_RESET}
+  ¿Sin vídeos a mano? ${C_DIM}wallfluxctl gallery${C_RESET} descarga fondos libres.
 
   Para arrancarlo con la sesión, añade ${C_DIM}wallflux-daemon &${C_RESET} al
   autoarranque de tu gestor de ventanas, o vuelve a ejecutar este script con

@@ -7,7 +7,9 @@ import {
   Gauge,
   Proportions,
   Scaling,
+  KeyRound,
   Settings2,
+  Sparkles,
   SquareStack,
   Volume2,
   VolumeX,
@@ -27,6 +29,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Slider } from "@/components/ui/slider";
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
@@ -161,6 +164,35 @@ export function Settings({ config, open, onOpenChange, onSave }: Props) {
                 disabled={draft.power.pause_on_battery}
                 format={(value) => `${value} fps`}
                 onChange={(battery_fps_cap) => power({ battery_fps_cap })}
+              />
+            </Section>
+
+            <Section
+              title="Galería"
+              icon={<Sparkles />}
+              description="El catálogo curado funciona sin configurar nada. Pexels es opcional y añade miles de vídeos."
+            >
+              <Field
+                label="Clave de la API de Pexels"
+                hint="Gratuita en pexels.com/api. Se guarda en tu config.toml."
+                icon={<KeyRound />}
+                stacked
+                control={
+                  <Input
+                    type="password"
+                    value={draft.gallery.pexels_api_key}
+                    placeholder="sin clave — solo catálogo curado"
+                    onChange={(event) =>
+                      setDraft({
+                        ...draft,
+                        gallery: {
+                          ...draft.gallery,
+                          pexels_api_key: event.target.value,
+                        },
+                      })
+                    }
+                  />
+                }
               />
             </Section>
 

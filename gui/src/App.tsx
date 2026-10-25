@@ -3,12 +3,12 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   AlertTriangle,
-  Download,
   FolderOpen,
   ImagePlus,
   Play,
   RefreshCw,
   Settings2,
+  Sparkles,
 } from "lucide-react";
 import { Toaster, toast } from "sonner";
 
@@ -21,7 +21,7 @@ import {
   type LibraryView,
   type Status,
 } from "@/api";
-import { EngineLibrary } from "@/components/EngineLibrary";
+import { Gallery } from "@/components/Gallery";
 import { OutputStrip } from "@/components/OutputStrip";
 import { Settings } from "@/components/Settings";
 import { WallpaperCard } from "@/components/WallpaperCard";
@@ -46,7 +46,7 @@ export function App() {
   const [config, setConfig] = useState<Config | null>(null);
   const [target, setTarget] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [showEngine, setShowEngine] = useState(false);
+  const [showGallery, setShowGallery] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const fail = useCallback((err: unknown) => {
@@ -96,12 +96,6 @@ export function App() {
     const timer = window.setInterval(() => void refreshStatus(), STATUS_INTERVAL);
     return () => window.clearInterval(timer);
   }, [daemon?.running, refreshStatus]);
-
-  /** Ids que ya están en la biblioteca, para marcarlos en el explorador. */
-  const existingIds = useMemo(
-    () => new Set((library?.wallpapers ?? []).map((wallpaper) => wallpaper.id)),
-    [library],
-  );
 
   /** Qué salidas muestran cada fondo. */
   const activeByWallpaper = useMemo(() => {
@@ -189,9 +183,9 @@ export function App() {
               <ImagePlus />
               Importar vídeo
             </Button>
-            <Button variant="secondary" onClick={() => setShowEngine(true)}>
-              <Download />
-              Wallpaper Engine
+            <Button variant="secondary" onClick={() => setShowGallery(true)}>
+              <Sparkles />
+              Galería
             </Button>
             <IconButton
               label="Volver a escanear la biblioteca"
@@ -272,11 +266,10 @@ export function App() {
             </main>
           </ScrollArea>
 
-          <EngineLibrary
-            open={showEngine}
-            onOpenChange={setShowEngine}
-            alreadyImported={existingIds}
-            onImported={() => void load(true)}
+          <Gallery
+            open={showGallery}
+            onOpenChange={setShowGallery}
+            onDownloaded={() => void load(true)}
             onError={fail}
             onSuccess={(message) => toast.success(message)}
           />

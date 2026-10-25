@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use wallflux_core::ipc::{Client, Request, Response, Status};
+use wallflux_core::gallery::{self, GalleryItem};
 use wallflux_core::library::Wallpaper;
-use wallflux_core::wallpaper_engine::{self, Item as EngineItem};
 use std::os::unix::process::CommandExt as _;
 
 use tauri::Manager as _;
@@ -221,36 +221,62 @@ fn daemon_binary() -> Result<PathBuf, String> {
     Ok(PathBuf::from("wallflux-daemon"))
 }
 
-/// What a scan of the Wallpaper Engine workshop turned up.
+/// Lo que la galería tiene para enseñar, y con qué fuentes cuenta.
 #[derive(Serialize)]
-pub struct EngineLibrary {
-    items: Vec<EngineItem>,
-    /// Directories that were looked at, so the empty state can say where.
-    searched: Vec<PathBuf>,
+pub struct GalleryView {
+    items: Vec<GalleryItem>,
+    /// Cierto cuando hay clave de Pexels, para que la interfaz ofrezca
+    /// ponerla en vez de callarse que existe esa opción.
+    pexels_enabled: bool,
+    /// Aviso no fatal, como que Pexels haya fallado pero el catálogo no.
+    warning: Option<String>,
 }
 
 #[tauri::command]
-async fn engine_scan() -> CmdResult<EngineLibrary> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let searched = wallpaper_engine::workshop_dirs();
-        let items = wallpaper_engine::scan_all().map_err(stringify)?;
-        Ok(EngineLibrary { items, searched })
+async fn gallery_browse(query: String) -> CmdResult<GalleryView> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let config = Config::load().unwrap_or_default();
+        let mut warning = None;
+
+        let mut items = gallery::fetch_catalog(&config.gallery.catalog_url).map_err(stringify)?;
+        if !query.trim().is_empty() {
+            let needle = query.to_lowercase();
+            items.retain(|item| {
+                item.title.to_lowercase().contains(&needle)
+                    || item
+                        .tags
+                        .iter()
+                        .any(|tag| tag.to_lowercase().contains(&needle))
+            });
+        }
+
+        let key = config.gallery.pexels_api_key.trim().to_string();
+        let pexels_enabled = !key.is_empty();
+        if pexels_enabled {
+            // Que Pexels falle no puede dejar sin galería: el catálogo ya
+            // está cargado y es lo que hace que esto funcione sin cuenta.
+            match gallery::search_pexels(&key, &query, 30) {
+                Ok(found) => items.extend(found),
+                Err(err) => warning = Some(format!("Pexels: {err:#}")),
+            }
+        }
+
+        Ok(GalleryView {
+            items,
+            pexels_enabled,
+            warning,
+        })
     })
     .await
     .map_err(stringify)?
 }
 
-/// Copies one workshop item into the library. Returns its new wallflux id.
+/// Descarga un fondo de la galería. Devuelve su id local.
 #[tauri::command]
-async fn engine_import(workshop_id: String) -> CmdResult<String> {
+async fn gallery_download(item: GalleryItem) -> CmdResult<String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let items = wallpaper_engine::scan_all().map_err(stringify)?;
-        let item = items
-            .iter()
-            .find(|item| item.workshop_id == workshop_id)
-            .ok_or_else(|| format!("no existe el elemento {workshop_id}"))?;
-        let library = paths::library_dir().map_err(stringify)?;
-        wallpaper_engine::import(item, &library).map_err(stringify)
+        let library = gallery::library_root().map_err(stringify)?;
+        gallery::download(&item, &library, &mut gallery::no_progress()).map_err(stringify)
     })
     .await
     .map_err(stringify)?
@@ -282,13 +308,6 @@ pub fn run() {
                     Err(err) => eprintln!("cannot resolve a wallflux directory: {err:#}"),
                 }
             }
-            // Read-only, and only so the Wallpaper Engine browser can show
-            // the previews that already sit next to each workshop item.
-            for dir in wallpaper_engine::workshop_dirs() {
-                if let Err(err) = scope.allow_directory(&dir, true) {
-                    eprintln!("cannot grant asset access to {}: {err}", dir.display());
-                }
-            }
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
@@ -306,8 +325,8 @@ pub fn run() {
             import_wallpaper,
             library_path,
             start_daemon,
-            engine_scan,
-            engine_import,
+            gallery_browse,
+            gallery_download,
         ])
         .run(tauri::generate_context!())
         .expect("error while running wallflux GUI");

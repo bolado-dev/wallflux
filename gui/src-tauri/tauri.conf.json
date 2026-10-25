@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; media-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'",
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: https:; media-src 'self' asset: http://asset.localhost; connect-src 'self' ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'",
       "assetProtocol": {
         "enable": true,
         "scope": [
@@ -34,11 +34,20 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "appimage"],
-    "icon": ["icons/icon.png"],
+    "targets": [
+      "deb",
+      "appimage"
+    ],
+    "icon": [
+      "icons/icon.png"
+    ],
     "linux": {
       "deb": {
-        "depends": ["libmpv2", "libegl1", "ffmpeg"]
+        "depends": [
+          "libmpv2",
+          "libegl1",
+          "ffmpeg"
+        ]
       }
     }
   }

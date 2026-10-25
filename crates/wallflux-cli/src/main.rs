@@ -6,8 +6,8 @@
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use wallflux_core::gallery::{self, GalleryItem, Source};
 use wallflux_core::ipc::{Client, PauseReason, Request, Response, Status};
-use wallflux_core::wallpaper_engine;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -74,24 +74,20 @@ enum Command {
     Shutdown,
     /// Comprueba que hay un daemon escuchando.
     Ping,
-    /// Importa fondos de vídeo de una instalación de Wallpaper Engine.
-    #[command(name = "import-engine")]
-    ImportEngine(ImportEngineArgs),
+    /// Busca y descarga fondos libres de la galería en línea.
+    Gallery(GalleryArgs),
 }
 
 #[derive(clap::Args, Debug)]
-struct ImportEngineArgs {
-    /// Ids del taller a importar. Omítelos con --all para coger todos los de vídeo.
-    ids: Vec<String>,
-    /// Lista lo encontrado sin importar nada.
-    #[arg(long, short)]
-    list: bool,
-    /// Importa todos los elementos importables.
-    #[arg(long, short)]
-    all: bool,
-    /// Busca aquí en vez de en las rutas habituales de Steam.
+struct GalleryArgs {
+    /// Texto a buscar. Sin clave de Pexels solo filtra el catálogo curado.
+    query: Option<String>,
+    /// Descarga estos ids en vez de solo listarlos.
+    #[arg(long, short, num_args = 1..)]
+    get: Vec<String>,
+    /// Descarga todo lo que salga en el listado. Úsalo con cabeza.
     #[arg(long)]
-    from: Option<std::path::PathBuf>,
+    all: bool,
 }
 
 fn main() -> std::process::ExitCode {
@@ -106,10 +102,10 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run(args: Args) -> Result<()> {
-    // Importing is filesystem work, so it does not need a running daemon —
-    // and the most likely moment to run it is before you have started one.
-    if let Command::ImportEngine(engine) = &args.command {
-        return import_engine(engine, args.json);
+    // La galería es red y disco: no necesita un daemon en marcha, y el
+    // momento más probable de usarla es antes de tener ninguno.
+    if let Command::Gallery(gallery_args) = &args.command {
+        return gallery_command(gallery_args, args.json);
     }
 
     let mut client = Client::connect()?;
@@ -145,8 +141,8 @@ fn run(args: Args) -> Result<()> {
         Command::Reload => Request::ReloadConfig,
         Command::Shutdown => Request::Shutdown,
         Command::Ping => Request::Ping,
-        // Handled above, before the daemon connection.
-        Command::ImportEngine(_) => unreachable!(),
+        // Atendido arriba, antes de conectar con el daemon.
+        Command::Gallery(_) => unreachable!(),
     };
 
     let response = client.request(&request)?;
@@ -209,25 +205,30 @@ fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-/// Lists or imports Wallpaper Engine workshop items.
-fn import_engine(args: &ImportEngineArgs, json: bool) -> Result<()> {
-    let items = match &args.from {
-        Some(dir) => wallpaper_engine::scan(dir)?,
-        None => wallpaper_engine::scan_all()?,
-    };
+/// Lista o descarga fondos de la galería en línea.
+fn gallery_command(args: &GalleryArgs, json: bool) -> Result<()> {
+    let config = wallflux_core::Config::load().unwrap_or_default();
+    let query = args.query.as_deref().unwrap_or_default();
 
-    if items.is_empty() {
-        let searched = match &args.from {
-            Some(dir) => vec![dir.clone()],
-            None => wallpaper_engine::workshop_dirs(),
-        };
-        if searched.is_empty() {
-            bail!(
-                "no se ha encontrado la carpeta del taller de Wallpaper Engine. \
-                 Si tu Steam está en un sitio poco habitual, indícalo con --from <carpeta>"
-            );
+    let mut items = gallery::fetch_catalog(&config.gallery.catalog_url)?;
+    if !query.is_empty() {
+        let needle = query.to_lowercase();
+        items.retain(|item| {
+            item.title.to_lowercase().contains(&needle)
+                || item
+                    .tags
+                    .iter()
+                    .any(|tag| tag.to_lowercase().contains(&needle))
+        });
+    }
+
+    // Pexels solo entra si el usuario ha puesto su clave; es un extra, no un
+    // requisito, y sin ella la galería sigue funcionando.
+    if !config.gallery.pexels_api_key.trim().is_empty() {
+        match gallery::search_pexels(&config.gallery.pexels_api_key, query, 24) {
+            Ok(found) => items.extend(found),
+            Err(err) => eprintln!("aviso: la búsqueda en Pexels ha fallado: {err:#}"),
         }
-        bail!("no hay elementos del taller en: {searched:?}");
     }
 
     if json {
@@ -235,63 +236,67 @@ fn import_engine(args: &ImportEngineArgs, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    if args.list || (args.ids.is_empty() && !args.all) {
-        println!(
-            "{:<14} {:<12} {:<34} ESTADO",
-            "ID DEL TALLER", "TIPO", "TÍTULO"
-        );
-        for item in &items {
-            let kind = format!("{:?}", item.kind).to_lowercase();
-            let status = if item.kind.importable() {
-                "se puede importar".to_string()
-            } else {
-                item.kind.reason().to_string()
-            };
-            println!(
-                "{:<14} {kind:<12} {:<34} {status}",
-                item.workshop_id,
-                truncate(&item.title, 34)
+    let chosen: Vec<&GalleryItem> = if args.all {
+        items.iter().collect()
+    } else if !args.get.is_empty() {
+        let mut chosen = Vec::new();
+        for id in &args.get {
+            chosen.push(
+                items
+                    .iter()
+                    .find(|item| &item.id == id)
+                    .with_context(|| format!("no hay ningún fondo con id {id}"))?,
             );
         }
-        let importable = items.iter().filter(|item| item.kind.importable()).count();
+        chosen
+    } else {
+        // Sin --get ni --all, solo se lista.
+        if items.is_empty() {
+            println!("La galería no ha devuelto nada para «{query}».");
+            return Ok(());
+        }
+        println!("{:<22} {:<44} {:<14} ORIGEN", "ID", "TÍTULO", "LICENCIA");
+        for item in &items {
+            let origin = match item.source {
+                Source::Curated => "catálogo",
+                Source::Pexels => "pexels",
+            };
+            println!(
+                "{:<22} {:<44} {:<14} {origin}",
+                item.id,
+                truncate(&item.title, 44),
+                truncate(&item.license, 14)
+            );
+        }
         println!(
-            "\n{importable} de {} elemento(s) se pueden importar.",
+            "\n{} fondo(s). Descarga con: wallfluxctl gallery --get <id>",
             items.len()
         );
-        if !args.list {
-            println!("Impórtalos con: wallfluxctl import-engine --all");
+        if config.gallery.pexels_api_key.trim().is_empty() {
+            println!(
+                "Para buscar también en Pexels, pon tu clave gratuita en \
+                 gallery.pexels_api_key dentro de config.toml."
+            );
         }
         return Ok(());
-    }
-
-    let library = wallflux_core::paths::library_dir()?;
-    let chosen: Vec<_> = if args.all {
-        items.iter().filter(|item| item.kind.importable()).collect()
-    } else {
-        let mut chosen = Vec::new();
-        for id in &args.ids {
-            let item = items
-                .iter()
-                .find(|item| &item.workshop_id == id)
-                .with_context(|| format!("no hay ningún elemento del taller con id {id}"))?;
-            chosen.push(item);
-        }
-        chosen
     };
 
-    let mut imported = 0;
+    let library = gallery::library_root()?;
+    let mut downloaded = 0;
     for item in chosen {
-        match wallpaper_engine::import(item, &library) {
+        print!("descargando {}… ", item.title);
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        match gallery::download(item, &library, &mut gallery::no_progress()) {
             Ok(id) => {
-                println!("importado {} como {id}", item.title);
-                imported += 1;
+                println!("como {id}");
+                downloaded += 1;
             }
-            Err(err) => eprintln!("omitido {}: {err:#}", item.title),
+            Err(err) => println!("error: {err:#}"),
         }
     }
-    println!("\n{imported} fondo(s) importados en {}", library.display());
+    println!("\n{downloaded} fondo(s) en {}", library.display());
 
-    // Tell a running daemon to pick them up; it is fine if none is running.
     if wallflux_core::ipc::daemon_running()
         && let Ok(mut client) = Client::connect()
         && client.request(&Request::RescanLibrary).is_ok()
@@ -301,6 +306,8 @@ fn import_engine(args: &ImportEngineArgs, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Recorta a `width` caracteres — no bytes: un corte por bytes revienta con
+/// cualquier título acentuado.
 fn truncate(text: &str, width: usize) -> String {
     if text.chars().count() <= width {
         return text.to_string();
@@ -376,7 +383,6 @@ fn format_uptime(seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wallflux_core::wallpaper_engine::ItemKind;
 
     #[test]
     fn uptime_reads_naturally_at_each_scale() {
@@ -400,26 +406,11 @@ mod tests {
     }
 
     #[test]
-    fn long_titles_are_truncated_with_an_ellipsis() {
-        assert_eq!(truncate("short", 10), "short");
-        assert_eq!(truncate("a very long wallpaper title", 10), "a very lo…");
-        // Counted in characters, not bytes: a byte slice would panic here.
+    fn long_titles_are_truncated_by_characters_not_bytes() {
+        assert_eq!(truncate("corto", 10), "corto");
+        assert_eq!(truncate("un título larguísimo de fondo", 10), "un título…");
+        // Por bytes esto entraría en pánico a mitad de un carácter.
         assert_eq!(truncate("ñññññññññññ", 5), "ññññ…");
-    }
-
-    #[test]
-    fn every_engine_item_kind_explains_itself() {
-        for kind in [
-            ItemKind::Video,
-            ItemKind::Scene,
-            ItemKind::Web,
-            ItemKind::Application,
-            ItemKind::Unknown,
-        ] {
-            assert!(!kind.reason().is_empty());
-        }
-        assert!(ItemKind::Video.importable());
-        assert!(!ItemKind::Scene.importable());
     }
 
     #[test]

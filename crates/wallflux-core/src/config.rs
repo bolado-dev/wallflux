@@ -121,12 +121,36 @@ pub struct OutputConfig {
     pub disabled: bool,
 }
 
+/// The online gallery.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GalleryConfig {
+    /// Where the curated catalogue is fetched from. A fork can point this at
+    /// its own list without touching any code.
+    pub catalog_url: String,
+    /// A free Pexels API key, which unlocks searching their library. Empty
+    /// means the gallery shows the curated catalogue only — which is why
+    /// there is no key shipped here: one baked into a public repository
+    /// would be everyone's key, and would be revoked the week after.
+    pub pexels_api_key: String,
+}
+
+impl Default for GalleryConfig {
+    fn default() -> Self {
+        Self {
+            catalog_url: crate::gallery::DEFAULT_CATALOG_URL.to_string(),
+            pexels_api_key: String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub version: u32,
     pub playback: PlaybackConfig,
     pub power: PowerConfig,
+    pub gallery: GalleryConfig,
     /// Keyed by connector name as the compositor reports it (`eDP-1`,
     /// `DP-2`, …). `BTreeMap` so a rewritten file keeps a stable order
     /// instead of shuffling the user's sections around.
@@ -139,6 +163,7 @@ impl Default for Config {
             version: CONFIG_VERSION,
             playback: PlaybackConfig::default(),
             power: PowerConfig::default(),
+            gallery: GalleryConfig::default(),
             outputs: BTreeMap::new(),
         }
     }
@@ -293,6 +318,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.wallpaper_for("DP-1"), None);
+    }
+
+    #[test]
+    fn the_gallery_ships_no_api_key() {
+        // A key committed to a public repository is everyone's key, and gets
+        // revoked. The curated catalogue is what makes the gallery work
+        // without one.
+        let config = Config::default();
+        assert!(config.gallery.pexels_api_key.is_empty());
+        assert!(config.gallery.catalog_url.starts_with("https://"));
     }
 
     #[test]

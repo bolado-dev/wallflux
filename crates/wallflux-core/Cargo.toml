@@ -16,3 +16,4 @@ toml.workspace = true
 tracing.workspace = true
 directories.workspace = true
 libc.workspace = true
+ureq = { version = "3", features = ["json"] }
