@@ -307,10 +307,37 @@ sitios que redistribuyen contenido del taller sin la licencia; wallflux no
 los usa y no los va a usar. Si no tienes Wallpaper Engine, la galería de la
 sección anterior funciona entera y de principio a fin.
 
-Y aun teniéndola: solo los elementos de tipo `video` se convierten en fondos
-de wallflux. Las escenas son un `.pkg` propietario, los web necesitan una
-superficie de webview que todavía no existe, y los de tipo aplicación son
-ejecutables.
+### Escenas y archivos `.pkg`
+
+Los elementos de tipo `video` se convierten siempre. Las escenas van en un
+`.pkg`, y ahí hay que separar dos cosas que se confunden fácil:
+
+- **Abrir el contenedor sí se puede.** Un `.pkg` es un archivo sin comprimir
+  ni cifrar: una cadena de versión, una tabla de `(ruta, offset, longitud)` y
+  los datos. wallflux lo lee. El formato no está documentado por Valve, así
+  que el lector trata **todos** los campos como hostiles: valida rangos antes
+  de reservar memoria, comprueba que ninguna entrada se salga del fichero y
+  rechaza rutas que intenten escribir fuera del destino (`../`, rutas
+  absolutas, prefijos de Windows). Hay un test para cada una de esas cosas.
+- **Reproducir una escena no.** Lo que sale del contenedor es un grafo de
+  capas, shaders, sistemas de partículas y lógica reactiva al audio.
+  Mostrarlo significa reimplementar el motor de Wallpaper Engine, que es un
+  proyecto en sí mismo y parcial en todos los intentos que existen. wallflux
+  no lo hace y no lo va a hacer.
+
+El punto intermedio es lo que wallflux sí aprovecha: **buena parte de las
+escenas son en realidad un vídeo con efectos encima**. Al importar una
+escena, wallflux abre el `.pkg`, busca vídeo dentro y, si lo encuentra, lo
+convierte en un fondo normal. Si no lo hay, la escena es procedural y te lo
+dice con esas palabras en vez de fallar sin explicación.
+
+Por eso en el listado las escenas salen como *Intentar* y no como
+descartadas: desde fuera no hay forma de saber cuál de las dos es. En la
+portada del taller suelen ser unas 18 de 30 elementos, frente a 9 que son
+vídeo puro.
+
+Los `web` siguen necesitando una superficie de webview que todavía no existe,
+y los de tipo aplicación son ejecutables.
 
 ## Actualizar
 

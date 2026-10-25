@@ -59,17 +59,24 @@ impl WorkshopKind {
         WorkshopKind::Unknown
     }
 
-    /// Only video items become wallflux wallpapers. Scenes are a proprietary
-    /// `.pkg`, web ones need a webview surface wallflux does not have yet,
-    /// and applications are executables.
+    /// A video item always converts.
     pub fn importable(self) -> bool {
         self == WorkshopKind::Video
+    }
+
+    /// A scene *might*: wallflux cannot render a scene graph, but a good
+    /// number of scenes are a video with effects layered over it, and the
+    /// video inside the `.pkg` plays fine on its own. Whether a given scene
+    /// is one of those is only knowable after downloading it, which is why
+    /// this is a separate, weaker promise than [`Self::importable`].
+    pub fn maybe_importable(self) -> bool {
+        self == WorkshopKind::Scene
     }
 
     pub fn reason(self) -> &'static str {
         match self {
             WorkshopKind::Video => "se puede importar",
-            WorkshopKind::Scene => "las escenas usan un formato .pkg propietario",
+            WorkshopKind::Scene => "escena: solo funciona si lleva un vídeo dentro del .pkg",
             WorkshopKind::Web => "los fondos web aún no están soportados",
             WorkshopKind::Application => "los fondos de tipo aplicación son ejecutables",
             WorkshopKind::Unknown => "tipo de fondo no reconocido",
@@ -416,16 +423,27 @@ pub fn import_downloaded(path: &Path, library_root: &Path) -> Result<String> {
         .as_deref()
         .map(|raw| WorkshopKind::from_tags(&[raw.to_string()]))
         .unwrap_or(WorkshopKind::Unknown);
-    if !kind.importable() {
+    if !kind.importable() && !kind.maybe_importable() {
         bail!("{}", kind.reason());
     }
 
-    let source = project
-        .file
-        .as_deref()
-        .map(|file| path.join(file))
-        .filter(|candidate| candidate.is_file() && has_video_extension(candidate))
-        .context("el manifiesto no apunta a ningún archivo de vídeo")?;
+    // A video item names its file directly. A scene names a `.pkg`, which
+    // has to be opened to find out whether there is a video in there at all.
+    // `_staging` holds the extraction directory alive until the copy below.
+    let _staging;
+    let source = match kind {
+        WorkshopKind::Video => project
+            .file
+            .as_deref()
+            .map(|file| path.join(file))
+            .filter(|candidate| candidate.is_file() && has_video_extension(candidate))
+            .context("el manifiesto no apunta a ningún archivo de vídeo")?,
+        _ => {
+            let (video, staging) = video_from_scene(path)?;
+            _staging = staging;
+            video
+        }
+    };
 
     let title = project
         .title
@@ -477,6 +495,57 @@ pub fn import_downloaded(path: &Path, library_root: &Path) -> Result<String> {
     })?;
 
     Ok(id)
+}
+
+/// Opens a scene's `.pkg` and returns the video inside, if there is one.
+///
+/// Returns the extraction directory alongside it so the caller can copy the
+/// file before it is cleaned up.
+fn video_from_scene(item: &Path) -> Result<(PathBuf, ScratchDir)> {
+    let pkg = find_pkg(item).context(
+        "la escena no trae ningún .pkg que abrir; puede que use un formato que wallflux no conoce",
+    )?;
+    let staging = ScratchDir::new(item.join(".wallflux-extract"))?;
+    crate::pkg::extract(&pkg, &staging.path)
+        .with_context(|| format!("no se ha podido abrir {}", pkg.display()))?;
+
+    let video = crate::pkg::find_video(&staging.path).context(
+        "esta escena no lleva vídeo dentro: es procedural (shaders, partículas) y \
+         reproducirla exigiría el motor de Wallpaper Engine, que wallflux no implementa",
+    )?;
+    Ok((video, staging))
+}
+
+fn find_pkg(dir: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    entries.flatten().map(|entry| entry.path()).find(|path| {
+        path.is_file()
+            && path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("pkg"))
+                .unwrap_or(false)
+    })
+}
+
+/// A directory removed when it goes out of scope. An extracted scene can be
+/// hundreds of megabytes of textures we do not keep.
+struct ScratchDir {
+    path: PathBuf,
+}
+
+impl ScratchDir {
+    fn new(path: PathBuf) -> Result<Self> {
+        let _ = std::fs::remove_dir_all(&path);
+        crate::paths::ensure_dir(&path)?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -685,23 +754,6 @@ mod tests {
         let dir = std::env::temp_dir();
         let err = download_with_steamcmd("; rm -rf /", "alguien", &dir).unwrap_err();
         assert!(err.to_string().contains("numérico"), "{err}");
-    }
-
-    #[test]
-    fn importing_refuses_a_scene_by_name() {
-        let dir = std::env::temp_dir().join(format!("wallflux-ws-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let item = dir.join("123");
-        std::fs::create_dir_all(&item).unwrap();
-        std::fs::write(
-            item.join("project.json"),
-            r#"{"title":"Escena","type":"scene","file":"scene.pkg"}"#,
-        )
-        .unwrap();
-        let err = import_downloaded(&item, &dir.join("lib"))
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("propietario"), "{err}");
     }
 
     #[test]

@@ -215,7 +215,7 @@ export function describeWorkshopKind(kind: WorkshopKind): string {
     case "video":
       return "Se puede importar";
     case "scene":
-      return "Las escenas usan un formato .pkg propietario";
+      return "Escena: solo funciona si lleva un vídeo dentro";
     case "web":
       return "Los fondos web aún no están soportados";
     case "application":
@@ -230,4 +230,9 @@ export function humanSize(bytes: number): string {
   if (!bytes) return "—";
   const mb = bytes / (1024 * 1024);
   return mb >= 1 ? `${Math.round(mb)} MB` : `${Math.round(bytes / 1024)} KB`;
+}
+
+/** Cierto si merece la pena intentar importar, aunque no esté garantizado. */
+export function workshopMayWork(kind: WorkshopKind): boolean {
+  return kind === "video" || kind === "scene";
 }

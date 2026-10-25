@@ -14,6 +14,7 @@ import {
   api,
   describeWorkshopKind,
   humanSize,
+  workshopMayWork,
   type WorkshopItem,
   type WorkshopView,
 } from "@/api";
@@ -119,7 +120,7 @@ export function Workshop({
   };
 
   const items = data?.items ?? [];
-  const importable = items.filter((item) => item.kind === "video").length;
+  const importable = items.filter((item) => workshopMayWork(item.kind)).length;
   const ready = Boolean(data?.steamcmd) && steamUser.trim().length > 0;
 
   return (
@@ -132,7 +133,7 @@ export function Workshop({
           </DialogTitle>
           <DialogDescription>
             {items.length > 0
-              ? `${importable} de ${items.length} son de vídeo. Descargar usa tu propia cuenta de Steam.`
+              ? `${importable} de ${items.length} se pueden traer. Descargar usa tu propia cuenta de Steam.`
               : "El catálogo del taller de Steam. Explorar es libre; descargar requiere tener la aplicación."}
           </DialogDescription>
         </DialogHeader>
@@ -300,13 +301,14 @@ function WorkshopCard({
   onImport: () => void;
 }) {
   const [broken, setBroken] = useState(false);
-  const importable = item.kind === "video";
+  const certain = item.kind === "video";
+  const mayWork = workshopMayWork(item.kind);
 
   return (
     <div
       className={cn(
         "flex flex-col overflow-hidden rounded-xl border bg-card",
-        !importable && "opacity-55",
+        !mayWork && "opacity-55",
       )}
     >
       <div className="relative aspect-video w-full shrink-0 overflow-hidden bg-black">
@@ -355,13 +357,13 @@ function WorkshopCard({
           </a>
         </span>
 
-        {importable ? (
+        {mayWork ? (
           <Tooltip>
             <TooltipTrigger asChild>
               <span className="mt-auto">
                 <Button
                   size="sm"
-                  variant={done ? "secondary" : "default"}
+                  variant={done ? "secondary" : certain ? "default" : "secondary"}
                   className="w-full"
                   onClick={onImport}
                   disabled={busy || done || !ready}
@@ -373,15 +375,23 @@ function WorkshopCard({
                   ) : (
                     <Download />
                   )}
-                  {busy ? "Descargando…" : done ? "Importado" : "Importar"}
+                  {busy
+                    ? "Descargando…"
+                    : done
+                      ? "Importado"
+                      : certain
+                        ? "Importar"
+                        : "Intentar"}
                 </Button>
               </span>
             </TooltipTrigger>
-            {!ready && (
-              <TooltipContent>
-                Hace falta steamcmd y tu cuenta de Steam
-              </TooltipContent>
-            )}
+            <TooltipContent className="max-w-xs">
+              {!ready
+                ? "Hace falta steamcmd y tu cuenta de Steam"
+                : certain
+                  ? "Se importará como fondo de vídeo"
+                  : "Las escenas solo funcionan si llevan un vídeo dentro del .pkg; wallflux lo extraerá si lo encuentra"}
+            </TooltipContent>
           </Tooltip>
         ) : (
           <span className="mt-auto truncate text-xs text-muted-foreground">

@@ -370,10 +370,15 @@ fn workshop_command(args: &WorkshopArgs, json: bool) -> Result<()> {
         return Ok(());
     }
 
+    // Las escenas entran en el listado normal: no son importables seguro,
+    // pero sí si llevan vídeo dentro, y eso solo se sabe descargando.
     let shown: Vec<_> = if args.all {
         items.iter().collect()
     } else {
-        items.iter().filter(|item| item.kind.importable()).collect()
+        items
+            .iter()
+            .filter(|item| item.kind.importable() || item.kind.maybe_importable())
+            .collect()
     };
 
     println!(
@@ -383,6 +388,8 @@ fn workshop_command(args: &WorkshopArgs, json: bool) -> Result<()> {
     for item in &shown {
         let status = if item.kind.importable() {
             "se puede importar".to_string()
+        } else if item.kind.maybe_importable() {
+            "se puede intentar".to_string()
         } else {
             item.kind.reason().to_string()
         };
@@ -396,13 +403,18 @@ fn workshop_command(args: &WorkshopArgs, json: bool) -> Result<()> {
     }
 
     let importable = items.iter().filter(|item| item.kind.importable()).count();
+    let maybe = items
+        .iter()
+        .filter(|item| item.kind.maybe_importable())
+        .count();
     println!(
-        "\n{importable} de {} son de vídeo e importables{}.",
+        "\n{importable} de vídeo (seguro) y {maybe} escenas (si llevan vídeo dentro), \
+         de {} en total{}.",
         items.len(),
         if args.all {
             ""
         } else {
-            " (usa --all para ver el resto)"
+            " — usa --all para ver el resto"
         }
     );
     println!(
